@@ -4704,7 +4704,7 @@
         }
       },
       "healthWarnings": {
-        "title": "Attention needed"
+        "title": "Vyžaduje pozornost"
       },
       "vectorDbMemory": {
         "title": "Vyhledávací index se nevejde do paměti vektorové databáze",
