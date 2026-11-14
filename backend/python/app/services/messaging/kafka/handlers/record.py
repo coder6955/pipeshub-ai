@@ -113,7 +113,6 @@ from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.handlers.entity import BaseEventService
 from app.services.messaging.precision_check import active_verdict
 from app.services.messaging.precision_flip import PrecisionFlip, precision_flip_in
-from app.services.vector_db.collection_pin import CollectionPinStore
 from app.services.vector_db.rebuild_state import (
     PHASE_FAILED,
     PHASE_READY,
