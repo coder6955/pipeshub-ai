@@ -312,7 +312,7 @@ export const UploadNewSchema = z.object({
         message: 'fileBuffer or fileBuffers must be present',
       },
     ),
-  query: z.object({}),
+  query: z.object({ derived: z.literal('true').optional() }),
   params: z.object({}),
   headers: Headers,
 });

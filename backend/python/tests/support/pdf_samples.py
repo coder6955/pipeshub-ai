@@ -7,9 +7,16 @@ no ``startxref`` (so pdfminer scans backwards through all of it).
 from __future__ import annotations
 
 import io
+import random
+from typing import TYPE_CHECKING
 
+from PIL import Image
 from reportlab.lib import pdfencrypt
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
 
 MIB = 1 << 20
 
@@ -22,6 +29,32 @@ def text_pdf(pages: int = 1) -> bytes:
         pdf.setFont("Helvetica", 11)
         for row in range(60):
             pdf.drawString(40, 800 - row * 13, "The quick brown fox jumps over the lazy dog " * 2)
+        pdf.showPage()
+    pdf.save()
+    return buf.getvalue()
+
+
+def page_marker(page: int) -> str:
+    """The text that identifies page *page* (1-based) in ``numbered_pdf`` and ``heavy_pages_pdf``."""
+    return f"PAGE-{page:06d}"
+
+
+def numbered_pdf(pages: int) -> bytes:
+    """Each page holds its own marker (``page_marker``) and little else, so a part's page can be told apart."""
+    return heavy_pages_pdf(pages, heavy=())
+
+
+def heavy_pages_pdf(pages: int, heavy: Collection[int], image_side: int = 300, seed: int = 7) -> bytes:
+    """Numbered pages; those in *heavy* (1-based) also carry an incompressible image of about ``3 * side**2`` bytes."""
+    rng = random.Random(seed)
+    buf = io.BytesIO()
+    pdf = canvas.Canvas(buf, pageCompression=0)
+    for number in range(1, pages + 1):
+        pdf.setFont("Helvetica", 11)
+        pdf.drawString(40, 800, page_marker(number))
+        if number in heavy:
+            noise = Image.frombytes("RGB", (image_side, image_side), rng.randbytes(3 * image_side**2))
+            pdf.drawImage(ImageReader(noise), 40, 300, width=300, height=300)
         pdf.showPage()
     pdf.save()
     return buf.getvalue()

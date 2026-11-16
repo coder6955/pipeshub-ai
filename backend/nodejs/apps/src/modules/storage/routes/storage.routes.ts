@@ -41,7 +41,10 @@ import { StorageController } from '../controllers/storage.controller';
 import { NotFoundError } from '../../../libs/errors/http.errors';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
-import { ARTIFACT_FILE_MAX_BYTES } from '../constants/constants';
+import {
+  ARTIFACT_FILE_MAX_BYTES,
+  SERVICE_FILE_MAX_BYTES,
+} from '../constants/constants';
 
 const logger = Logger.getInstance({ service: 'StorageRoutes' });
 
@@ -67,12 +70,21 @@ export function createStorageRouter(container: Container): Router {
     }
   };
 
+  // A service that stores a file it derived itself (not one a user sent) asks for
+  // the fixed service cap with ?derived=true; every other upload keeps the user cap.
+  const resolveInternalUploadLimit = async (
+    req: AuthenticatedServiceRequest,
+  ): Promise<number> =>
+    req.query.derived === 'true'
+      ? SERVICE_FILE_MAX_BYTES
+      : resolveMaxUploadSize();
+
   router.post(
     '/internal/upload',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
     async (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
       try {
-        const maxFileSize = await resolveMaxUploadSize();
+        const maxFileSize = await resolveInternalUploadLimit(req);
         const service = new FileProcessorService({
           fieldName: 'file',
           allowedMimeTypes: Object.values(extensionToMimeType),
@@ -506,7 +518,7 @@ export function createStorageRouter(container: Container): Router {
       maxFilesAllowed: 1,
       isMultipleFilesAllowed: false,
       processingType: FileProcessingType.BUFFER,
-      maxFileSize: 1024 * 1024 * 100,
+      maxFileSize: SERVICE_FILE_MAX_BYTES,
       strictFileUpload: true,
     }).getMiddleware,
     ValidationMiddleware.validate(DocumentIdParams),

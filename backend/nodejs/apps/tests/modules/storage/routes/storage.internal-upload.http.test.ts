@@ -21,6 +21,8 @@ import { AuthTokenService } from '../../../../src/libs/services/authtoken.servic
 import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
+import * as platformSettings from '../../../../src/modules/configuration_manager/utils/util'
+import { SERVICE_FILE_MAX_BYTES } from '../../../../src/modules/storage/constants/constants'
 import { scopedStorageServiceJwtGenerator } from '../../../../src/libs/utils/createJwt'
 import { DefaultStorageConfig } from '../../../../src/modules/tokens_manager/services/cm.service'
 import { FakeBackend } from '../../tokens_manager/routes/connectors-http-harness'
@@ -231,4 +233,100 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
     expect(filesOnDisk()).to.have.length(4)
   })
 
+  describe('the size cap and the same path', () => {
+    const USER_CAP = 1024
+
+    const uploadBytes = async (
+      size: number,
+      { query = '', name = 'part.pdf', fill = 0x61 }: { query?: string; name?: string; fill?: number } = {},
+    ): Promise<{ status: number; body: Record<string, unknown> }> => {
+      const form = new FormData()
+      form.append('file', new Blob([new Uint8Array(size).fill(fill)], { type: 'application/pdf' }), name)
+      form.append('documentPath', 'split/vrid-1')
+      form.append('isVersionedFile', 'false')
+      form.append('documentName', path.parse(name).name)
+      const res = await fetch(`${baseUrl}/internal/upload${query}`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${scopedStorageServiceJwtGenerator(ORG_ID, SCOPED_JWT_SECRET, USER_ID)}` },
+        body: form,
+      })
+      const text = await res.text()
+      return { status: res.status, body: text ? (JSON.parse(text) as Record<string, unknown>) : {} }
+    }
+
+    beforeEach(() => {
+      sinon.stub(platformSettings, 'getPlatformSettingsFromStore').resolves({
+        fileUploadMaxSizeBytes: USER_CAP,
+        featureFlags: {},
+      })
+    })
+
+    it('refuses a file over the organization upload limit when the caller did not say it is derived', async () => {
+      const r = await uploadBytes(USER_CAP + 1)
+
+      expect(r.status).to.be.within(400, 413)
+      expect(documents.size).to.equal(0)
+    })
+
+    it('accepts a derived file over the organization upload limit', async () => {
+      const r = await uploadBytes(10 * USER_CAP, { query: '?derived=true' })
+
+      expect(r.status).to.equal(200)
+      expect(documents.size).to.equal(1)
+    })
+
+    it('still refuses a derived file over the fixed service cap, and stores nothing', async () => {
+      const r = await uploadBytes(SERVICE_FILE_MAX_BYTES + 1, { query: '?derived=true' })
+
+      expect(r.status).to.be.within(400, 413)
+      expect(documents.size).to.equal(0)
+      expect(filesOnDisk()).to.have.length(0)
+    })
+
+    it('keeps the organization limit for a derived flag that is not exactly true', async () => {
+      const r = await uploadBytes(USER_CAP + 1, { query: '?derived=1' })
+
+      expect(r.status).to.equal(400)
+      expect(documents.size).to.equal(0)
+    })
+
+    for (const value of ['1', 'TRUE', 'false', '']) {
+      it(`refuses a small file with derived=${value || '(empty)'}, since only true is a derived upload`, async () => {
+        const r = await uploadBytes(10, { query: `?derived=${value}` })
+
+        expect(r.status).to.equal(400)
+        expect(documents.size).to.equal(0)
+      })
+    }
+
+    it('refuses a repeated derived flag', async () => {
+      const r = await uploadBytes(10, { query: '?derived=true&derived=true' })
+
+      expect(r.status).to.equal(400)
+      expect(documents.size).to.equal(0)
+    })
+
+    it('accepts a derived file of exactly the service cap', async () => {
+      const r = await uploadBytes(SERVICE_FILE_MAX_BYTES, { query: '?derived=true' })
+
+      expect(r.status).to.equal(200)
+      expect(documents.size).to.equal(1)
+    })
+
+    it('creates a second document, and keeps the first one intact, when the same name is uploaded to the same path again', async () => {
+      const first = await uploadBytes(200, { fill: 0x61 })
+      const second = await uploadBytes(200, { fill: 0x62 })
+
+      expect([first.status, second.status]).to.deep.equal([200, 200])
+      expect(first.body._id).to.not.equal(second.body._id)
+      expect(documents.size).to.equal(2)
+      const root = path.join(mountParent(), MOUNT)
+      const bytesOf = (id: string): number[] => {
+        const file = filesOnDisk().find((f) => f.includes(id) && f.endsWith('.pdf'))
+        return [...fs.readFileSync(path.join(root, file as string))].slice(0, 2)
+      }
+      expect(bytesOf(String(first.body._id))).to.deep.equal([0x61, 0x61])
+      expect(bytesOf(String(second.body._id))).to.deep.equal([0x62, 0x62])
+    })
+  })
 })

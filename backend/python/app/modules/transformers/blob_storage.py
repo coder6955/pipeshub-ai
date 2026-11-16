@@ -3,12 +3,14 @@ import base64
 import concurrent.futures
 import contextlib
 import errno
+import hashlib
 import json
 import os
 import random
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, NamedTuple, TypedDict
 
 import aiohttp
@@ -234,7 +236,7 @@ def clean_stored_record(data: dict[str, Any]) -> dict[str, Any]:
     cleaned = clean_top_level_empty_values(data)
     block_containers = cleaned.get("block_containers")
     if isinstance(block_containers, dict):
-        for key in ("blocks", "block_groups"):
+        for key in ("blocks", "block_groups", "trailing_context"):
             if isinstance(block_containers.get(key), list):
                 block_containers[key] = [
                     clean_top_level_empty_values(item) if isinstance(item, dict) else item
@@ -751,9 +753,30 @@ async def close_shared_redis() -> None:
         await cache.close()
 
 
+@dataclass(frozen=True)
+class DerivedFileTags:
+    """What a derived file (a part of a split PDF) is tagged with in storage."""
+
+    connector_id: str
+    virtual_record_id: str
+
+    def __post_init__(self) -> None:
+        if not self.connector_id or not self.virtual_record_id:
+            raise ValueError("A derived file needs a connector id and a virtual record id")
+
+
 class CustomMetadataEntry(TypedDict):
     key: str
     value: Any  # NOTE: 'Any' is used here because storage metadata values may be str, int, bool, or even structured types, depending on the client and blob store requirements.
+
+@dataclass(frozen=True)
+class _DerivedFile:
+    folder: str
+    name: str
+    data: bytes
+    metadata: list[CustomMetadataEntry]
+    idempotency_key: str
+
 
 def _versioned_json_form(
     json_data: bytes,
@@ -2416,10 +2439,15 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Unexpected error uploading raw content: %s", str(e))
             raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
 
-    async def _create_placeholder(self, session, url, data, headers) -> dict | None:
+    async def _create_placeholder(
+        self, session, url, data, headers, idempotency_key: str | None = None
+    ) -> dict | None:
         """Create the placeholder document. Retried like an idempotent request:
-        its Idempotency-Key makes a repeat return the first attempt's placeholder."""
-        create_headers = _with_idempotency_key(headers)
+        its Idempotency-Key makes a repeat return the first attempt's placeholder. A caller that
+        needs a repeat of the whole upload (not just of this request) to find it passes its own key."""
+        create_headers = (
+            {**headers, "Idempotency-Key": idempotency_key} if idempotency_key else _with_idempotency_key(headers)
+        )
 
         async def _attempt() -> dict | None:
             async with session.post(url, json=data, headers=create_headers) as response:
@@ -2643,6 +2671,95 @@ class BlobStorage(Transformer):
         except Exception as e:
             self.logger.error("❌ Failed to save binary to storage for record %s: %s", record_id, str(e))
             return None, None
+
+    async def save_derived_pdf(
+        self,
+        org_id: str,
+        document_path: str,
+        data: bytes,
+        tags: DerivedFileTags,
+    ) -> str:
+        """Store a PDF this service cut from another file and return its document id.
+
+        *document_path* is the file's whole location (``folder/.../name``, no extension): its
+        last segment is the document name, the rest its folder. The same path and bytes send the
+        same Idempotency-Key, so a retry after a crash returns the document the first attempt
+        made; a different content at the same path is a new document (the storage service never
+        overwrites). On local storage the upload asks for the service size cap, not the user
+        upload limit. Raises when the file could not be stored.
+        """
+        folder, _, name = document_path.strip("/").rpartition("/")
+        if not name:
+            raise ValueError("document_path needs a file name")
+        file = _DerivedFile(
+            folder=folder,
+            name=name,
+            data=data,
+            metadata=[
+                {"key": "connectorId", "value": tags.connector_id},
+                {"key": "virtualRecordId", "value": tags.virtual_record_id},
+            ],
+            idempotency_key=hashlib.sha256(
+                f"{org_id}/{document_path}/{hashlib.sha256(data).hexdigest()}".encode()
+            ).hexdigest(),
+        )
+        headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
+        async with _borrowed_session() as session:
+            if storage_type == "local":
+                return await self._upload_derived_local(session, nodejs_endpoint, headers, file)
+            return await self._upload_derived_cloud(session, nodejs_endpoint, headers, file)
+
+    async def _upload_derived_local(
+        self, session: aiohttp.ClientSession, nodejs_endpoint: str, headers: dict, file: _DerivedFile
+    ) -> str:
+        upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}?derived=true"
+        create_headers = {**headers, "Idempotency-Key": file.idempotency_key}
+
+        async def _attempt() -> str:
+            form_data = aiohttp.FormData()
+            form_data.add_field("file", file.data, filename=f"{file.name}.pdf", content_type="application/pdf")
+            form_data.add_field("documentName", file.name)
+            form_data.add_field("documentPath", file.folder)
+            form_data.add_field("isVersionedFile", "false")
+            form_data.add_field("extension", "pdf")
+            _add_custom_metadata_to_form(form_data, file.metadata)
+            async with session.post(upload_url, data=form_data, headers=create_headers) as response:
+                if response.status == HttpStatusCode.CONFLICT.value:
+                    raise TransientStorageError("Derived file upload still in progress")
+                if response.status != HttpStatusCode.SUCCESS.value:
+                    raise _storage_status_error(response.status, "Failed to upload derived file")
+                document_id = (await response.json()).get("_id")
+                if not document_id:
+                    raise ValueError("No document id in the upload response")
+                return document_id
+
+        return await self._with_storage_retry("derived file upload", _attempt)
+
+    async def _upload_derived_cloud(
+        self, session: aiohttp.ClientSession, nodejs_endpoint: str, headers: dict, file: _DerivedFile
+    ) -> str:
+        placeholder = await self._create_placeholder(
+            session,
+            f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}",
+            {
+                "documentName": file.name,
+                "documentPath": file.folder,
+                "extension": "pdf",
+                "isVersionedFile": False,
+                "customMetadata": file.metadata,
+            },
+            headers,
+            idempotency_key=file.idempotency_key,
+        )
+        document_id = (placeholder or {}).get("_id")
+        if not document_id:
+            raise ValueError("No document id in the placeholder response")
+        upload_url = f"{nodejs_endpoint}{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
+        signed_url = (await self._get_signed_url(session, upload_url, {}, headers)).get("signedUrl")
+        if not signed_url:
+            raise ValueError(f"No signed URL for derived file {document_id}")
+        await self._upload_raw_to_signed_url(session, signed_url, file.data, "application/pdf")
+        return document_id
 
     async def _relocate_stored_copy(
         self,
@@ -2911,6 +3028,15 @@ class BlobStorage(Transformer):
                 "Could not delete replaced storage doc %s (vrid %s): %s",
                 document_id, virtual_record_id, exc,
             )
+
+    async def delete_document(self, org_id: str, document_id: str) -> None:
+        """Hard-delete one storage document. A document that is already gone is not an error;
+        any other failure raises, so a caller that must not leave the file behind can retry."""
+        headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+        url = f"{nodejs_endpoint}{Routes.STORAGE_DOCUMENT.value.format(documentId=document_id)}?hard=true"
+        async with get_shared_session().delete(url, headers=headers) as resp:
+            if resp.status not in (200, 204, 404):
+                raise RuntimeError(f"Could not delete storage document {document_id}: status {resp.status}")
 
     async def delete_storage_docs_for_vrid(self, org_id: str, virtual_record_id: str) -> None:
         """Delete every storage document of an abandoned virtualRecordId (its

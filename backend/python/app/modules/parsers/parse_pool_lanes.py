@@ -100,7 +100,9 @@ _WAIT_LOG_SECONDS = 30.0
 _UNREAPED_ERROR_SECONDS = 30.0
 _SETTLE_SECONDS = 1.0
 _ADMIT_POLL_SECONDS = 0.05
-_NEVER_IN_PARENT = frozenset({ParseKind.PDF_LAYOUT, ParseKind.EXCEL_LOAD, ParseKind.RENDER, ParseKind.INSPECT})
+_NEVER_IN_PARENT = frozenset(
+    {ParseKind.PDF_LAYOUT, ParseKind.EXCEL_LOAD, ParseKind.RENDER, ParseKind.INSPECT, ParseKind.PDF_SPLIT}
+)
 
 
 class _Lease(Protocol):

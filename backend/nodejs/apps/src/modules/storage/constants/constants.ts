@@ -22,6 +22,11 @@ export const MAX_MISSING_DOCUMENT_IDS = 500;
 export const ARTIFACT_URL_TTL_SECONDS = 15 * 60;
 export const ARTIFACT_MAX_FILES_PER_CALL = 1000;
 export const ARTIFACT_FILE_MAX_BYTES = 100 * 1024 * 1024;
+
+// Per-file cap for files a service derives from a stored one (parts of a split
+// PDF): fixed, so a user upload limit below it cannot make them fail. It applies
+// instead of the user limit, so an admin limit above it does not raise it.
+export const SERVICE_FILE_MAX_BYTES = 100 * 1024 * 1024;
 // A retiring claim older than this is taken to be from a delete that died
 // before it finished, and a later delete may claim the revision again.
 export const ARTIFACT_RETIRING_STALE_MS = 15 * 60 * 1000;

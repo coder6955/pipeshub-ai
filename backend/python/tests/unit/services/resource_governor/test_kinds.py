@@ -39,6 +39,8 @@ def oracle(kind: str, size: int, covered: bool = False) -> int:
         return int(0.65 * GIB)
     if kind in SLOPE:
         return int(min(max(0.064 * GIB + SLOPE[kind] * size, 0.10 * GIB), 1.75 * GIB))
+    if kind == "pdf_split":
+        return int(min(max((0.125 * GIB + 6.5 * size), 64 * MIB), 4 * GIB))
     if kind == "excel_load":
         return 0 if covered else 1536 * MIB
     return int(1.25 * GIB)  # inspect, unknown, anything else
@@ -69,12 +71,20 @@ def _no_explicit_lane_setting(monkeypatch: pytest.MonkeyPatch) -> None:
         (ParseKind.CSV, 5 * MIB),
         (ParseKind.CODE, 5 * MIB),
         (ParseKind.EXCEL_LOAD, 20 * MIB),
+        (ParseKind.PDF_SPLIT, 0),
+        (ParseKind.PDF_SPLIT, 166 * MIB),
+        (ParseKind.PDF_SPLIT, 2 * GIB),
         (ParseKind.INSPECT, 10 * MIB),
         (ParseKind.UNKNOWN, 10 * MIB),
     ],
 )
 def test_charge_by_kind_table(kind: ParseKind, size: int) -> None:
     assert lane_charge_bytes(kind, size) == oracle(kind.value, size)
+
+
+def test_pdf_split_charge_covers_the_worker_peak_measured_on_the_17k_page_fixture() -> None:
+    assert lane_charge_bytes(ParseKind.PDF_SPLIT, 166_633_611) >= 974 * MIB
+    assert lane_charge_bytes(ParseKind.PDF_SPLIT, 5_740_865) >= 55 * MIB
 
 
 def test_pdf_layout_charge_adds_the_input_size() -> None:
@@ -120,7 +130,7 @@ def test_charge_is_never_below_the_floor_or_above_the_bound() -> None:
     for kind in ParseKind:
         for size in (0, 1, 10 * MIB, 3 * GIB):
             value = lane_charge_bytes(kind, size)
-            if kind is ParseKind.EXCEL_LOAD:
+            if kind in (ParseKind.EXCEL_LOAD, ParseKind.PDF_SPLIT):
                 continue
             assert 64 * MIB <= value <= max(int(1.25 * GIB) + size, 1792 * MIB)
 

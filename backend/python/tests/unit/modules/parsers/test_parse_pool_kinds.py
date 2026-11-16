@@ -495,8 +495,9 @@ def test_call_sites_use_a_member_of_parse_kind() -> None:
 # -- never in the parent --------------------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("kind", [ParseKind.PDF_LAYOUT, ParseKind.PDF_SPLIT])
 def test_pdf_layout_never_runs_in_the_parent_under_on(
-    make_budget: Callable[..., LaneBudget], make_pool: Callable[..., LanePool], hub: StubHub
+    make_budget: Callable[..., LaneBudget], make_pool: Callable[..., LanePool], hub: StubHub, kind: ParseKind
 ) -> None:
     hub.fail_start = _WorkerUnavailable("no fork")
     budget = make_budget(2)
@@ -508,7 +509,7 @@ def test_pdf_layout_never_runs_in_the_parent_under_on(
         return "ran"
 
     with pytest.raises(ParseWorkerError) as raised:
-        submit(pool, where, kind=ParseKind.PDF_LAYOUT).future.result(timeout=10)
+        submit(pool, where, kind=kind).future.result(timeout=10)
     assert raised.value.cause == "unavailable"
     assert ran_in == []
     # A kind that is not worker memory keeps the thread fallback.

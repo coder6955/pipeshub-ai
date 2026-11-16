@@ -46,6 +46,13 @@ TEXT_BASE_GB = 0.064
 TEXT_MIN_GB = 0.10
 TEXT_MAX_GB = 1.75
 LANE_CHARGE_FLOOR_BYTES = 64 * MIB
+# Cutting a PDF into parts: a base plus a multiple of the file size (pdfium holds the source
+# document and the part being written). Measured through the parse pool: a 5.5 MiB file peaked at
+# 55 MiB, a 159 MiB one (17,153 pages) at 974 MiB; the charge sits about 19 % above that.
+# Capped so one huge file cannot ask for more than a host has.
+PDF_SPLIT_BASE_GB = 0.125
+PDF_SPLIT_SLOPE = 6.5
+PDF_SPLIT_MAX_GB = 4.0
 # The parent's working set while a PDF is parsed: PdfPlumber (base + 0.25 GiB of result
 # building) or, because the parser is chosen later, the OCR worst case.
 PDF_PERMIT_GB = 0.50
@@ -68,6 +75,7 @@ class ParseKind(StrEnum):
     DOCLING_PDF = "docling_pdf"  # the Docling service's own conversion
     INSPECT = "inspect"  # lane job: PDF inspection
     PDF = "pdf"  # a PDF as the permit sees it (the parser is chosen later)
+    PDF_SPLIT = "pdf_split"  # lane job: cutting a large PDF into parts on disk
     UNKNOWN = "unknown"
 
 
@@ -141,6 +149,9 @@ def lane_charge_bytes(
         raw = TEXT_BASE_GB * GIB + TEXT_SLOPES[kind] * size
         raw = min(max(raw * scale, TEXT_MIN_GB * GIB), TEXT_MAX_GB * GIB)
         return int(raw)
+    elif kind is ParseKind.PDF_SPLIT:
+        raw = (PDF_SPLIT_BASE_GB * GIB + PDF_SPLIT_SLOPE * size) * scale
+        return int(min(max(raw, LANE_CHARGE_FLOOR_BYTES), PDF_SPLIT_MAX_GB * GIB * max(1.0, scale)))
     elif kind is ParseKind.EXCEL_LOAD:
         return 0 if permit_covered else int(excel_load_max_bytes() * scale)
     else:  # INSPECT, UNKNOWN and every kind that does not run in a lane
@@ -178,7 +189,9 @@ def parent_working_set_gb(kind: ParseKind | None, size_bytes: int | None = None)
     if kind in TEXT_PARENT_SLOPES:
         size = max(0, int(size_bytes or 0))
         return TEXT_PARENT_BASE_GB + TEXT_PARENT_SLOPES[kind] * size / GIB
-    if kind in (ParseKind.PDF, ParseKind.PDF_LAYOUT, ParseKind.RENDER, ParseKind.INSPECT):
+    if kind in (
+        ParseKind.PDF, ParseKind.PDF_LAYOUT, ParseKind.RENDER, ParseKind.INSPECT, ParseKind.PDF_SPLIT
+    ):
         return PDF_PERMIT_GB
     if kind is ParseKind.EXCEL_LOAD:
         return excel_document_memory_bytes() / GIB
