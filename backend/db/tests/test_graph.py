@@ -1212,3 +1212,18 @@ def test_the_link_read_uses_its_two_indexes_where_the_plain_statement_cannot(rdb
         plain = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, "SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = 'records' "
                                                                            "AND n.doc->>'externalRecordId' = 'e777'")
         assert not any(re.search(r"Index Cond: .*externalRecordId", p) for p in plain), plain[0]
+
+
+def test_the_split_indexes_are_partial_and_on_every_leaf(rdb):
+    """graph_0014: a split file's part documents are found by root, root and generation, and owner, and the split rows by state and age, from partial indexes on every leaf."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        for idx, needle in (
+            ("nodes_content_split_part_root", "rootVirtualRecordId"), ("nodes_content_split_part_root_gen", "gen"),
+            ("nodes_content_split_part_owner", "ownerConnectorId"), ("nodes_content_split_part_vrid", "virtualRecordId"), ("nodes_content_split_state", "updatedAtMs"),
+        ):
+            d = c.execute("SELECT indexdef FROM pg_indexes WHERE schemaname = 'graph' AND tablename = 'nodes' AND indexname = %s", (idx,)).fetchone()[0]
+            assert needle in d and "WHERE" in d, d
+            leaves = c.execute("SELECT count(*) FROM pg_partition_tree(%s::regclass) WHERE isleaf", (f"graph.{idx}",)).fetchone()[0]
+            parts = c.execute("SELECT count(*) FROM pg_partition_tree('graph.nodes'::regclass) WHERE isleaf").fetchone()[0]
+            assert leaves == parts and leaves > 0, (idx, leaves, parts)

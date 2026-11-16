@@ -67,6 +67,12 @@ from app.modules.indexing.named_entity_persist_retry import (
     retry_pending_named_entity_persists,
 )
 from app.modules.indexing.named_entity_sweep import run_named_entity_sweep_loop
+from app.modules.indexing.owner_connector import (
+    PartSkips,
+    is_part_record,
+    owner_connector_id,
+    prime_readable,
+)
 from app.modules.indexing.rate_limit_deferral import deferral_due
 from app.modules.indexing.record_label_repair import run_record_label_repair_loop
 from app.modules.indexing.record_republish import (
@@ -82,6 +88,7 @@ from app.modules.indexing.recovery_budget import (
     recovery_tracking_id,
 )
 from app.modules.indexing.scope_sweep_loop import run_scope_sweep_loop
+from app.modules.indexing.split_state import part_records_pages, prime_parts
 from app.modules.indexing.vector_membership_backfill import (
     run_vector_membership_backfill_loop,
 )
@@ -386,6 +393,7 @@ async def recover_in_progress_records(
                         results["skipped"] += 1
                         return True
                     record = latest_record
+                    await prime_parts([record], graph_provider)
                     record_name = record.get("recordName", "Unknown")
 
                     logger.debug(
@@ -397,9 +405,13 @@ async def recover_in_progress_records(
                     # branches would turn it AUTO_INDEX_OFF and strand its
                     # QUEUED copies. The republished event reaches the
                     # handler, which ends the enrichment and releases them.
-                    connector_id = record.get("connectorId")
+                    connector_id = owner_connector_id(record)
                     origin = record.get("origin")
-                    if connector_id and origin == OriginTypes.CONNECTOR.value and not resume_enrichment:
+                    if (
+                        connector_id
+                        and (origin == OriginTypes.CONNECTOR.value or is_part_record(record))
+                        and not resume_enrichment
+                    ):
                         # A failed read must not look like a deleted connector;
                         # raising leaves the row for the next pass.
                         connector_instance = await graph_provider.get_document(
@@ -468,7 +480,7 @@ async def recover_in_progress_records(
                         "orgId": record.get("orgId"),
                         "version": record.get("version", 0),
                         "connectorName": record.get("connectorName", Connectors.KNOWLEDGE_BASE.value),
-                        "connectorId": record.get("connectorId"),
+                        "connectorId": connector_id,
                         "extension": record.get("extension"),
                         "mimeType": record.get("mimeType"),
                         "origin": record.get("origin"),
@@ -815,6 +827,17 @@ async def recover_in_progress_records(
             )
         except Exception as exc:
             logger.warning(f"Named-entity persist retry skipped this pass: {exc}")
+        # Parts of a split PDF a parent attempt left unqueued, purges a busy part held up, and parts of a deleted file.
+        try:
+            event_processor = app_container.event_processor()
+            if inspect.isawaitable(event_processor):
+                event_processor = await event_processor
+            split_runtime = getattr(event_processor, "split_runtime", None)
+            if split_runtime is not None:
+                with system("split_sweep"):
+                    total_records += (await split_runtime.sweep.run_once()).total
+        except Exception as exc:
+            logger.warning(f"Split-PDF sweep skipped this pass: {exc}")
         try:
             total_records += await _sweep_pipeline_stages(app_container, concurrency_manager, logger)
         except Exception as exc:
@@ -1378,6 +1401,7 @@ async def _sweep_queued_records_for_inactive_connectors(
     interval is enough to be sure no worker still owns the row.
     """
     swept = 0
+    part_skips = PartSkips()
     # None means "could not read this pass" -- recorded so the lookup is not
     # repeated, but never mistaken for "gone". Rebuilt on the next tick.
     connector_active: dict[str, bool | None] = {}
@@ -1432,13 +1456,13 @@ async def _sweep_queued_records_for_inactive_connectors(
             )
             if not page:
                 break
+            usable = await prime_readable(page, graph_provider, part_skips, logger)
 
             swept_this_page = 0
-            for record in page:
-                connector_id = record.get("connectorId")
-                if (
-                    not connector_id
-                    or record.get("origin") != OriginTypes.CONNECTOR.value
+            for record in usable:
+                connector_id = owner_connector_id(record)
+                if not connector_id or not (
+                    record.get("origin") == OriginTypes.CONNECTOR.value or is_part_record(record)
                 ):
                     continue
 
@@ -1596,6 +1620,7 @@ async def _republish_stranded_records(
         return 0
 
     pass_started_ms = get_epoch_timestamp_in_ms()
+    part_skips = PartSkips()
     cutoff_ms = pass_started_ms - int(after_seconds * 1000)
     # None means "could not read this pass": see the sibling sweep above.
     connector_active: dict[str, bool | None] = {}
@@ -1675,8 +1700,9 @@ async def _republish_stranded_records(
                 # The lookup spans orgs; this pass is the copy's org.
                 if not twin or twin.get("orgId") != org_id or not is_live_record(twin):
                     continue
+                await prime_parts([twin], graph_provider)
                 if twin.get("indexingStatus") == ProgressStatus.QUEUED.value:
-                    if not await _is_active(str(twin.get("connectorId") or "")):
+                    if not await _is_active(owner_connector_id(twin) or ""):
                         return True
                 elif will_promote_queued_copies(twin, enrichment_live_after_ms):
                     return True
@@ -1841,6 +1867,14 @@ async def _republish_stranded_records(
                 after_key = page[-1].get("_key") or page[-1].get("id")
                 if len(page) < page_size or not after_key:
                     break
+            # A part answers to its parent's connector but sits under its own hidden one, so it is found
+            # through the part documents, which name the owner and are indexed on it.
+            async for part_page in part_records_pages(
+                graph_provider, connector_id, org_id,
+                {"indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value, "reason": CONNECTOR_OFF},
+                page_size=page_size,
+            ):
+                yield part_page
 
     for status_value, pages in (
         (ProgressStatus.QUEUED.value, _pages_in_status(ProgressStatus.QUEUED.value)),
@@ -1849,9 +1883,9 @@ async def _republish_stranded_records(
     ):
         parked_while_off = status_value == ProgressStatus.AUTO_INDEX_OFF.value
         async for page in pages:
-            for record in page:
+            for record in await prime_readable(page, graph_provider, part_skips, logger):
                 record_key = record.get("_key") or record.get("id")
-                connector_id = record.get("connectorId")
+                connector_id = owner_connector_id(record)
                 if parked_while_off and not is_live_record(record):
                     continue
                 # Uploads are otherwise left alone: a new one waits on its file

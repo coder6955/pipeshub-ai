@@ -129,6 +129,8 @@ from app.schema.arango.documents import (
     sql_table_record_schema,
     sql_view_record_schema,
     stage_state_schema,
+    content_split_part_schema,
+    content_split_schema,
     team_schema,
     ticket_record_schema,
     tool_schema,
@@ -374,6 +376,8 @@ NODE_COLLECTIONS = [
     (CollectionNames.SQL_VIEWS.value, sql_view_record_schema),
     (CollectionNames.CODE_FILES.value, code_file_record_schema),
     (CollectionNames.STAGE_STATES.value, stage_state_schema),
+    (CollectionNames.CONTENT_SPLITS.value, content_split_schema),
+    (CollectionNames.CONTENT_SPLIT_PARTS.value, content_split_part_schema),
 ]
 
 #: Retired collection roles, which read as READER.
@@ -995,6 +999,20 @@ _STAGE_STATE_INDEXES: tuple[tuple[str, ...], ...] = (
 # connector's states.
 _STAGE_STATE_PAGE_INDEX = "stage_state_connector_stage_status_key"
 
+# The split sweep reads the rows of a state by age; a split file's parts (their own collection, keyed by
+# the part record) are found by their root, alone and with the generation that made them, and by the
+# connector that owns the file.
+_CONTENT_SPLIT_INDEXES: tuple[tuple[str, tuple[str, ...], bool], ...] = (
+    # (orgId, state): the stats read of one organisation's open splits. (state, updatedAtMs): the sweep, which pages
+    # every organisation's rows of a state older than a time.
+    (CollectionNames.CONTENT_SPLITS.value, ("orgId", "state"), False),
+    (CollectionNames.CONTENT_SPLITS.value, ("state", "updatedAtMs"), False),
+    (CollectionNames.CONTENT_SPLIT_PARTS.value, ("rootVirtualRecordId",), False),
+    (CollectionNames.CONTENT_SPLIT_PARTS.value, ("rootVirtualRecordId", "gen"), False),
+    (CollectionNames.CONTENT_SPLIT_PARTS.value, ("ownerConnectorId",), False),
+    (CollectionNames.CONTENT_SPLIT_PARTS.value, ("virtualRecordId",), False),
+)
+
 # "Did this connector index anything since?", asked for a record about to fail
 # on its rate-limit wait; named, so the query can hint it over the
 # (connectorId, indexingStatus, reason, _key) index, which the optimizer
@@ -1352,9 +1370,21 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not await client.has_collection(stages):
             _ = await client.create_collection(stages, schema=stage_state_schema)
         # The connector service creates records; until it has, this fails and the caller retries.
-        for name, schema in ((stages, stage_state_schema), (CollectionNames.RECORDS.value, record_schema)):
+        splits = CollectionNames.CONTENT_SPLITS.value
+        if not await client.has_collection(splits):
+            _ = await client.create_collection(splits, schema=content_split_schema)
+        split_parts = CollectionNames.CONTENT_SPLIT_PARTS.value
+        if not await client.has_collection(split_parts):
+            _ = await client.create_collection(split_parts, schema=content_split_part_schema)
+        for name, schema in (
+            (stages, stage_state_schema), (splits, content_split_schema), (split_parts, content_split_part_schema),
+            (CollectionNames.RECORDS.value, record_schema),
+        ):
             if not await client.update_collection_schema(name, schema):
                 raise RuntimeError(f"could not apply the schema of collection '{name}'")
+        for collection, fields, sparse in _CONTENT_SPLIT_INDEXES:
+            if not await client.ensure_persistent_index(collection, list(fields), sparse=sparse):
+                raise RuntimeError(f"could not ensure the index {list(fields)} on '{collection}'")
         for fields in _STAGE_STATE_INDEXES:
             if not await client.ensure_persistent_index(stages, list(fields)):
                 raise RuntimeError(f"could not ensure the index {list(fields)} on '{stages}'")
@@ -1509,6 +1539,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         for fields in _STAGE_STATE_INDEXES:
             await self.http_client.ensure_persistent_index(CollectionNames.STAGE_STATES.value, list(fields))
+        for collection, fields, sparse in _CONTENT_SPLIT_INDEXES:
+            await self.http_client.ensure_persistent_index(collection, list(fields), sparse=sparse)
         await self.http_client.ensure_persistent_index(
             CollectionNames.STAGE_STATES.value, _STAGE_STATE_PAGE_FIELDS, name=_STAGE_STATE_PAGE_INDEX
         )
@@ -3423,6 +3455,36 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             {"statuses": statuses, "before": updated_before_ms, "limit": limit},
         )
         return [self._stage_doc_from_arango(row) for row in rows]
+
+    @override
+    async def content_splits_page(
+        self,
+        states: list[str],
+        *,
+        updated_before_ms: int | None = None,
+        after_key: str | None = None,
+        limit: int = 100,
+        org_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if self.http_client is None:
+            raise RuntimeError("ArangoDB client is not connected")
+        rows = await self.http_client.execute_aql(
+            """
+            FOR doc IN @@collection
+                FILTER doc.state IN @states
+                    AND (@before == null OR doc.updatedAtMs < @before)
+                    AND (@after == null OR doc._key > @after)
+                    AND (@org == null OR doc.orgId == @org)
+                SORT doc._key ASC
+                LIMIT @limit
+                RETURN doc
+            """,
+            {
+                "@collection": CollectionNames.CONTENT_SPLITS.value,
+                "states": states, "before": updated_before_ms, "after": after_key, "org": org_id, "limit": limit,
+            },
+        )
+        return [{k: v for k, v in row.items() if k not in ("_id", "_rev")} for row in rows]
 
     @override
     async def stage_states_delete_for_virtual_records(self, virtual_record_ids: list[str]) -> int:
@@ -6886,6 +6948,34 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         rows = await self._retry_write_conflicts(
             lambda: self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction),
             transaction,
+        )
+        return bool(rows)
+
+    async def delete_node_if_match(
+        self, key: str, collection: str, expected: dict[str, Any], transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.delete_node_if_match`."""
+        if not expected:
+            raise ValueError("delete_node_if_match needs an expectation")
+        bind_vars: dict[str, Any] = {"@collection": collection, "key": key}
+        filters = []
+        for i, (name, value) in enumerate(expected.items()):
+            bind_vars[f"f{i}"] = name
+            if value is None:
+                filters.append(f"FILTER doc[@f{i}] == null")
+            else:
+                bind_vars[f"v{i}"] = value
+                filters.append(f"FILTER doc[@f{i}] == @v{i}")
+        newline = "\n                "
+        query = f"""
+            FOR doc IN @@collection
+                FILTER doc._key == @key
+                {newline.join(filters)}
+                REMOVE doc IN @@collection
+                RETURN 1
+            """
+        rows = await self._retry_write_conflicts(
+            lambda: self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction), transaction,
         )
         return bool(rows)
 

@@ -41,6 +41,7 @@ from app.exceptions.indexing_exceptions import (
     EmbeddingModelUnavailableError,
     EmbeddingNotConfiguredError,
     IndexingError,
+    SplitScopeError,
     VectorStoreError,
 )
 from app.exceptions.non_retryable import NonRetryableError
@@ -80,7 +81,12 @@ from app.modules.transformers.code_units import (
     group_members,
     residue_pieces,
 )
-from app.modules.transformers.transformer import TransformContext, Transformer
+from app.modules.transformers.transformer import (
+    SPLIT_PARENT_GEN,
+    TransformContext,
+    Transformer,
+)
+from app.modules.transformers.write_scope import WriteScope
 from app.services.embeddings.multimodal.config import MultimodalProviderConfig
 from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactory
 from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
@@ -97,6 +103,7 @@ from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.membership import (
     STALE_SCOPE,
     mark_scope_stale,
+    require_indexed_filter,
     reset_membership_context,
     resolve_virtual_record_state,
     rewrite_or_delete_virtual_record,
@@ -247,6 +254,12 @@ _DEFAULT_SENTENCE_EMBED_MIN_WORDS = 100
 #   C           B, and ``EMBED_TABLE_ROWS_PER_POINT`` table rows per point.
 _POINT_POLICY_ENV = "EMBED_POINT_POLICY"
 _ROW_GROUP_META = "_rowGroup"
+def _scope_kw(scope: WriteScope | None) -> dict[str, WriteScope]:
+    """``scope=`` only for a split file's write. An unsplit write keeps the call shape it always had, so a wrapper or a test double
+    that never took the argument keeps working; the callee reads no scope as the file's whole virtual record."""
+    return {"scope": scope} if scope is not None and scope.is_split else {}
+
+
 def _point_policy() -> str:
     p = os.getenv(_POINT_POLICY_ENV, "A").strip().upper()
     return p if p in ("A", "B", "C") else "A"
@@ -1221,6 +1234,8 @@ class VectorStore(Transformer):
         org_id = record.org_id
         block_ids_to_delete = None
         is_reconciliation = False
+        split_gen = ctx.settings.get(SPLIT_PARENT_GEN)
+        scope = await WriteScope.of_record(record, gen=split_gen if isinstance(split_gen, str) else None)
         # A changed row's heading, or a re-indexed class's members, may be unchanged blocks left out below.
         titles = table_titles(block_containers.blocks, block_containers.block_groups)
         member_blocks = block_containers.blocks
@@ -1228,6 +1243,7 @@ class VectorStore(Transformer):
         if (
             ctx.reconciliation_context
             and ctx.reconciliation_context.blocks_to_index_ids is not None
+            and scope.reconciles
         ):
             is_reconciliation = True
             blocks_to_index_ids = ctx.reconciliation_context.blocks_to_index_ids
@@ -1262,6 +1278,7 @@ class VectorStore(Transformer):
             record=record,
             titles=titles,
             member_blocks=member_blocks,
+            **_scope_kw(scope),
         )
 
     # ------------------------------------------------------------------
@@ -1300,9 +1317,10 @@ class VectorStore(Transformer):
         org_id: str,
         record_id: str,
         virtual_record_id: str,
+        scope: WriteScope | None = None,
     ) -> None:
         semantic_metadata = getattr(record, "semantic_metadata", None)
-        if semantic_metadata is None:
+        if semantic_metadata is None or (scope is not None and not scope.writes_summary):
             return
         summary_doc = self._build_record_summary_document(
             record_id, virtual_record_id, org_id, semantic_metadata
@@ -1367,8 +1385,13 @@ class VectorStore(Transformer):
         org_id: str,
         semantic_metadata: SemanticMetadata,
         record: Optional["Record"] = None,
+        scope: WriteScope | None = None,
     ) -> None:
-        """Embed the record-level summary after extraction completes."""
+        """Embed the record-level summary after extraction completes. *scope* is what the caller knows about the file
+        (the classify stage of a split parent runs outside the manifest's context)."""
+        scope = scope or await self._scope_for(virtual_record_id, record)
+        if not scope.writes_summary:
+            return
         summary_doc = self._build_record_summary_document(
             record_id, virtual_record_id, org_id, semantic_metadata
         )
@@ -1385,7 +1408,7 @@ class VectorStore(Transformer):
 
         summary_block_id_set = {f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"}
         with stage("vector.delete"):
-            await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name, org_id=org_id)
+            await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name, org_id=org_id, **_scope_kw(scope))
         # The stamp is computed under the organisation of the record (enforced context checks read the ambient one), so a caller
         # with none bound gets the one it names; a context already bound is left as it is.
         try:
@@ -1394,13 +1417,13 @@ class VectorStore(Transformer):
         except MissingOrgContext:
             org_scope = for_org(org_id, job="index_record_summary") if org_id else contextlib.nullcontext()
         with org_scope:
-            tokens = await self._bind_membership(virtual_record_id, org_id=org_id)
+            tokens = await self._bind_membership(scope.read_vrid, org_id=org_id)
             try:
-                await self._process_document_chunks([summary_doc], record_id, collection_name)
+                await self._process_document_chunks([summary_doc], record_id, collection_name, **_scope_kw(scope))
             finally:
                 reset_membership_context(tokens)
             # The membership and the stamp were read before the embedding: what changed meanwhile is applied now, as for the other points
-            await self._resync_membership_after_write(virtual_record_id, record_id)
+            await self._resync_membership_after_write(scope.read_vrid, record_id)
         self.logger.debug("✅ Indexed record summary for record %s", record_id)
 
     async def _collection_with_model(self, org_id: str, record: Optional["Record"]) -> str:
@@ -1425,6 +1448,7 @@ class VectorStore(Transformer):
         block_containers: BlocksContainer,
         record: object | None = None,
         stored_now: Callable[[], Awaitable[BlocksContainer | None]] | None = None,
+        scope: WriteScope | None = None,
     ) -> int:
         """Embed only the class header units and the residue unit of a stored record; returns how many
         were written.
@@ -1446,21 +1470,23 @@ class VectorStore(Transformer):
         if not documents:
             return 0
         collection_name = await self._collection_with_model(org_id, record)
-        tokens = await self._bind_membership(virtual_record_id, org_id=org_id)
+        scope = scope or await self._scope_for(virtual_record_id, record)
+        tokens = await self._bind_membership(scope.read_vrid, org_id=org_id)
         try:
-            await self._process_document_chunks(documents, record_id, collection_name)
+            await self._process_document_chunks(documents, record_id, collection_name, **_scope_kw(scope))
             stale = await self._drop_superseded_units(
                 documents, groups, await stored_now(), record_id, virtual_record_id, org_id, context, collection_name,
+                scope=scope,
             ) if stored_now else set()
         finally:
             reset_membership_context(tokens)
         # What changed in the membership while the units were embedded is applied now, as for the other points.
-        await self._resync_membership_after_write(virtual_record_id, record_id)
+        await self._resync_membership_after_write(scope.read_vrid, record_id)
         return sum(d.metadata["blockId"] not in stale for d in documents)
 
     async def _drop_superseded_units(
         self, documents: list[Document], groups: list, now: BlocksContainer | None, record_id: str,
-        virtual_record_id: str, org_id: str, context: str, collection_name: str,
+        virtual_record_id: str, org_id: str, context: str, collection_name: str, scope: WriteScope | None = None,
     ) -> set[str]:
         """Remove the units just written that the stored record ``now`` no longer holds; returns their ids.
 
@@ -1476,9 +1502,9 @@ class VectorStore(Transformer):
             stale.add(code_residue_block_id(virtual_record_id))
         if stale:
             # Nothing else would remove them: no stored metadata names these ids any more.
-            await self.delete_blocks_by_ids(stale, virtual_record_id, collection_name, org_id=org_id)
+            await self.delete_blocks_by_ids(stale, virtual_record_id, collection_name, org_id=org_id, **_scope_kw(scope))
         if residue_now and code_residue_block_id(virtual_record_id) in stale:
-            await self._process_document_chunks(residue_now, record_id, collection_name)
+            await self._process_document_chunks(residue_now, record_id, collection_name, **_scope_kw(scope))
         return stale
 
     async def virtual_records_with_residue_units(self, records: list[tuple[str, str, object]]) -> set[str]:
@@ -1841,6 +1867,7 @@ class VectorStore(Transformer):
         virtual_record_id: str,
         org_id: str,
         record: Optional["Record"] = None,
+        scope: WriteScope | None = None,
     ) -> None:
         """Remove embeddings when the record was deleted and no MD5 duplicate remains."""
         record_doc = await self.graph_provider.get_document(
@@ -1882,6 +1909,11 @@ class VectorStore(Transformer):
             f"Record {record_id} not found and no MD5 duplicates in org {org_id}; "
             f"releasing virtual_record_id {virtual_record_id}"
         )
+        if scope is not None and scope.is_split:
+            # The file-level release below would take the other parts' points with it.
+            collection_name = await self._collection_with_model(org_id, record)
+            await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id, **_scope_kw(scope))
+            return
         # Not a raw delete: the MD5 lookup above is org-scoped, so it cannot
         # see a sibling record in another org that shares this VRID (dedup was
         # global before it was scoped, so such pairs exist on upgraded
@@ -1898,15 +1930,19 @@ class VectorStore(Transformer):
 
     async def delete_blocks_by_ids(
         self, block_ids: set, virtual_record_id: str, collection_name: str, *, org_id: str | None = None,
+        scope: WriteScope | None = None,
     ) -> None:
         """Delete embeddings for specific block IDs scoped to a virtual record."""
         if not block_ids:
             return
         org_id = org_for_filter(org_id, match_bound=True)
+        scope = scope or WriteScope.unsplit(virtual_record_id)
         try:
             filter_dict = await self.vector_db_service.filter_collection(
-                must={"orgId": org_id, "blockId": list(block_ids), "virtualRecordId": virtual_record_id}
+                must={"orgId": org_id, "blockId": list(block_ids), **scope.must()}
             )
+            if scope.is_split:
+                await require_indexed_filter(self.vector_db_service, collection_name, filter_dict)
             await self.vector_db_service.delete_points(collection_name, filter_dict)
             self.logger.info(
                 f"✅ Deleted {len(block_ids)} blocks from vector store "
@@ -1922,12 +1958,17 @@ class VectorStore(Transformer):
     # Embeddings deletion (full record)
     # ------------------------------------------------------------------
 
-    async def delete_embeddings(self, virtual_record_id: str, collection_name: str, *, org_id: str | None = None) -> None:
+    async def delete_embeddings(
+        self, virtual_record_id: str, collection_name: str, *, org_id: str | None = None, scope: WriteScope | None = None,
+    ) -> None:
         org_id = org_for_filter(org_id, match_bound=True)
+        scope = scope or WriteScope.unsplit(virtual_record_id)
         try:
             filter_dict = await self.vector_db_service.filter_collection(
-                must={"orgId": org_id, "virtualRecordId": virtual_record_id}
+                must={"orgId": org_id, **scope.must()}
             )
+            if scope.is_split:
+                await require_indexed_filter(self.vector_db_service, collection_name, filter_dict)
             await self.vector_db_service.delete_points(collection_name, filter_dict)
             self.logger.debug(
                 f"✅ Deleted embeddings for virtual record '{virtual_record_id}'"
@@ -1944,7 +1985,11 @@ class VectorStore(Transformer):
         """Delete all vector points for a record, resolving the collection internally."""
         ctx = self._record_context(org_id, record)
         collection_name = self.collection_registry.resolve_write_collection(ctx)
-        await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
+        scope = await self._scope_for(virtual_record_id, record, write=False)
+        await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id, **_scope_kw(scope))
+
+    async def _scope_for(self, virtual_record_id: str, record: object | None, *, write: bool = True) -> WriteScope:
+        return await WriteScope.of_record(record, vrid=virtual_record_id, write=write) if record is not None else WriteScope.unsplit(virtual_record_id)
 
     # ------------------------------------------------------------------
     # Image embedding (provider dispatch via MultimodalEmbeddingFactory)
@@ -1973,7 +2018,7 @@ class VectorStore(Transformer):
         )
 
     def _build_image_points(
-        self, image_chunks: List[dict], results: List[ImageEmbeddingResult]
+        self, image_chunks: List[dict], results: List[ImageEmbeddingResult], scope: WriteScope | None = None,
     ) -> List[VectorPoint]:
         """Zip provider results back to their source chunk and build points.
 
@@ -2007,7 +2052,7 @@ class VectorStore(Transformer):
                     ),
                     dense_vector=result.embedding,
                     payload=vector_point_payload(
-                        chunk.get("metadata", {}),
+                        (scope.payload(chunk.get("metadata", {})) if scope else chunk.get("metadata", {})),
                         chunk.get("description", ""),
                     ),
                 )
@@ -2015,7 +2060,8 @@ class VectorStore(Transformer):
         return points
 
     async def _process_image_embeddings(
-        self, image_chunks: List[dict], image_base64s: List[str], record_id: str = ""
+        self, image_chunks: List[dict], image_base64s: List[str], record_id: str = "",
+        scope: WriteScope | None = None,
     ) -> List[VectorPoint]:
         """Embed images via the provider the factory resolves for this config.
 
@@ -2041,7 +2087,7 @@ class VectorStore(Transformer):
             return []
 
         results = await provider.embed_images(image_base64s)
-        return self._build_image_points(image_chunks, results)
+        return self._build_image_points(image_chunks, results, scope)
 
     async def _store_image_points(
         self, points: List[VectorPoint], collection_name: str
@@ -2202,6 +2248,7 @@ class VectorStore(Transformer):
         record_id: str,
         collection_name: str,
         presence: Optional["_RecordPresence"] = None,
+        scope: WriteScope | None = None,
     ) -> None:
         """Embed a batch of LangChain Documents and upsert to the vector DB.
 
@@ -2245,7 +2292,7 @@ class VectorStore(Transformer):
                 dense_vector=dense,
                 sparse_vector=sparse,
                 payload=vector_point_payload(
-                    {**{k: v for k, v in doc.metadata.items() if k != _SPARSE_EXTRA}, **stamp},
+                    {**(scope.payload if scope else dict)({k: v for k, v in doc.metadata.items() if k != _SPARSE_EXTRA}), **stamp},
                     doc.page_content,
                 ),
             )
@@ -2265,6 +2312,7 @@ class VectorStore(Transformer):
         langchain_document_chunks: List[Document],
         record_id: str,
         collection_name: str,
+        scope: WriteScope | None = None,
     ) -> None:
         self.logger.debug(
             f"⏱️ Embedding {len(langchain_document_chunks)} document chunks"
@@ -2283,7 +2331,7 @@ class VectorStore(Transformer):
         async def process_batch(batch_start: int, batch: List[Document]) -> int:
             try:
                 await self._embed_and_upsert_documents(
-                    batch, record_id, collection_name, presence
+                    batch, record_id, collection_name, presence, scope
                 )
                 return len(batch)
             except Exception as e:
@@ -2373,6 +2421,7 @@ class VectorStore(Transformer):
         virtual_record_id: str,
         collection_name: str,
         org_id: str | None,
+        scope: WriteScope,
     ) -> None:
         """Embed ``documents`` so that a retry of this event embeds only what is missing.
 
@@ -2424,7 +2473,7 @@ class VectorStore(Transformer):
                 EMBED_DONE: 0,
             })
             with stage("vector.delete"):
-                await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
+                await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id, **_scope_kw(scope))
             todo = documents
             present = set()
         else:
@@ -2441,14 +2490,14 @@ class VectorStore(Transformer):
             await progress.report(force=True)
 
         if todo:
-            await self._process_document_chunks(todo, record_id, collection_name)
+            await self._process_document_chunks(todo, record_id, collection_name, **_scope_kw(scope))
         if progress is not None:
             progress.finish()
 
         if not resuming:
             return
         await self._fence_and_verify(
-            attempt, key, point_ids, record_id, virtual_record_id, collection_name, org_id
+            attempt, key, point_ids, record_id, virtual_record_id, collection_name, org_id, scope
         )
 
     async def _fence_and_verify(
@@ -2460,6 +2509,7 @@ class VectorStore(Transformer):
         virtual_record_id: str,
         collection_name: str,
         org_id: str | None,
+        scope: WriteScope,
     ) -> None:
         """End of a resumed run: drop points of another revision or setup, and require every wanted point.
 
@@ -2471,9 +2521,11 @@ class VectorStore(Transformer):
         with stage("vector.delete"):
             for field, value in ((POINT_REV, attempt.rev), (POINT_KEY, key)):
                 stale = await self.vector_db_service.filter_collection(
-                    must={"orgId": org, "virtualRecordId": virtual_record_id},
+                    must={"orgId": org, **scope.must()},
                     must_not={field: value},
                 )
+                if scope.is_split:
+                    await require_indexed_filter(self.vector_db_service, collection_name, stale)
                 await self.vector_db_service.delete_points(collection_name, stale)
         wanted = list(dict.fromkeys(point_ids))
         with stage("vector.exists"):
@@ -2498,7 +2550,9 @@ class VectorStore(Transformer):
         virtual_record_id: str,
         collection_name: str,
         org_id: str | None = None,
+        scope: WriteScope | None = None,
     ) -> None:
+        scope = scope or WriteScope.unsplit(virtual_record_id)
         if not chunks:
             raise EmbeddingError("No chunks provided for embedding creation")
 
@@ -2521,7 +2575,7 @@ class VectorStore(Transformer):
         ):
             try:
                 await self._embed_resumably(
-                    attempt, langchain_docs, record_id, virtual_record_id, collection_name, org_id
+                    attempt, langchain_docs, record_id, virtual_record_id, collection_name, org_id, scope
                 )
             except NonRetryableError:
                 raise
@@ -2537,7 +2591,7 @@ class VectorStore(Transformer):
 
         # Delete existing embeddings first (full replace, non-reconciliation path)
         with stage("vector.delete"):
-            await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
+            await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id, **_scope_kw(scope))
 
         self.logger.debug(
             f"📊 Processing {len(langchain_docs)} text + {len(image_chunks)} image chunks"
@@ -2546,13 +2600,13 @@ class VectorStore(Transformer):
         if image_chunks:
             image_base64s = [c.get("image_uri") for c in image_chunks]
             with stage("embed.image", detail=f"{len(image_chunks)} images"):
-                points = await self._process_image_embeddings(image_chunks, image_base64s, record_id)
+                points = await self._process_image_embeddings(image_chunks, image_base64s, record_id, scope)
             with stage("vector.upsert", detail=f"{len(points)} image points"):
                 await self._store_image_points(points, collection_name)
 
         if langchain_docs:
             try:
-                await self._process_document_chunks(langchain_docs, record_id, collection_name)
+                await self._process_document_chunks(langchain_docs, record_id, collection_name, **_scope_kw(scope))
             except NonRetryableError:
                 raise
             except Exception as e:
@@ -2578,7 +2632,9 @@ class VectorStore(Transformer):
         record: Optional["Record"] = None,
         titles: dict[int, str] | None = None,
         member_blocks: list | None = None,
+        scope: WriteScope | None = None,
     ) -> bool | None:
+        scope = scope or WriteScope.unsplit(virtual_record_id)
         try:
             with stage("embed.setup"):
                 is_multimodal_embedding = await self.get_embedding_model_instance()
@@ -2588,6 +2644,12 @@ class VectorStore(Transformer):
                 "Failed to get embedding model instance",
                 details={"error": str(e)},
             ) from e
+        if scope.is_split and not self.collection_registry.split_fence_ready(collection_name):
+            raise SplitScopeError(
+                f"collection {collection_name} does not index the segment fields: a split write to it would "
+                f"delete or resume by a field the store cannot filter on",
+                details={"collection": collection_name},
+            )
 
         # No LLM is resolved here any more: the only thing it was used for was
         # describing images, which now happens before the record is stored
@@ -2598,7 +2660,7 @@ class VectorStore(Transformer):
         if titles is None:
             titles = table_titles(blocks, block_groups)
 
-        tokens = await self._bind_membership(virtual_record_id, record)
+        tokens = await self._bind_membership(scope.read_vrid, record)
         progress = current_progress()
 
         async def embed_section(docs: list[Document]) -> None:
@@ -2610,7 +2672,7 @@ class VectorStore(Transformer):
                     progress.unfinish()
                 else:
                     progress.plan(0, 0)
-            await self._process_document_chunks(docs, record_id, collection_name)
+            await self._process_document_chunks(docs, record_id, collection_name, **_scope_kw(scope))
             if progress is not None:
                 progress.finish()
 
@@ -2620,7 +2682,7 @@ class VectorStore(Transformer):
                 summary_block_id_set = {
                     f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"
                 }
-                await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name, org_id=org_id)
+                await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name, org_id=org_id, **_scope_kw(scope))
 
                 if record is not None:
                     semantic_metadata = getattr(record, "semantic_metadata", None)
@@ -2636,7 +2698,7 @@ class VectorStore(Transformer):
                 code_members = [b for b in member_blocks or [] if _is_code_block(b)]
                 if code_members:
                     await self.delete_blocks_by_ids(
-                        {code_residue_block_id(virtual_record_id)}, virtual_record_id, collection_name, org_id=org_id)
+                        {code_residue_block_id(virtual_record_id)}, virtual_record_id, collection_name, org_id=org_id, **_scope_kw(scope))
                     if not any(map(_is_code_block, blocks)) and not any(
                             g.sub_type == GroupSubType.CODE_CLASS for g in block_groups):
                         residue = await asyncio.to_thread(code_residue_documents, code_members, virtual_record_id,
@@ -2646,9 +2708,9 @@ class VectorStore(Transformer):
 
             if not blocks and not block_groups:
                 if block_ids_to_delete:
-                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id)
+                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id, **_scope_kw(scope))
                 await self._cleanup_orphaned_embeddings_if_needed(
-                    record_id, virtual_record_id, org_id, record
+                    record_id, virtual_record_id, org_id, record, scope
                 )
                 return None
 
@@ -2965,15 +3027,15 @@ class VectorStore(Transformer):
             # Record summary (only on fresh full index, not reconciliation/partial update)
             if record is not None and not (is_reconciliation or block_ids_to_delete):
                 await self._refresh_record_summary_documents(
-                    documents_to_embed, record, org_id, record_id, virtual_record_id
+                    documents_to_embed, record, org_id, record_id, virtual_record_id, scope
                 )
 
             if not documents_to_embed:
                 self.logger.warning("⚠️ No documents to embed after filtering by block type")
                 if block_ids_to_delete:
-                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id)
+                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id, **_scope_kw(scope))
                 await self._cleanup_orphaned_embeddings_if_needed(
-                    record_id, virtual_record_id, org_id, record
+                    record_id, virtual_record_id, org_id, record, scope
                 )
                 return True
 
@@ -2985,7 +3047,7 @@ class VectorStore(Transformer):
                 # sit beside their replacements, so they go first.
                 reindexed_ids = {b.id for b in blocks} | {bg.id for bg in block_groups}
                 with stage("vector.delete"):
-                    await self.delete_blocks_by_ids(reindexed_ids, virtual_record_id, collection_name, org_id=org_id)
+                    await self.delete_blocks_by_ids(reindexed_ids, virtual_record_id, collection_name, org_id=org_id, **_scope_kw(scope))
                 if block_ids_to_delete:
                     # A block id in both sets was just replaced; deleting it now would drop
                     # the new points.
@@ -2997,11 +3059,11 @@ class VectorStore(Transformer):
                 if image_chunks:
                     image_base64s = [c.get("image_uri") for c in image_chunks]
                     points = await self._process_image_embeddings(
-                        image_chunks, image_base64s, record_id
+                        image_chunks, image_base64s, record_id, scope
                     )
                     await self._store_image_points(points, collection_name)
             else:
-                await self._create_embeddings(documents_to_embed, record_id, virtual_record_id, collection_name, org_id=org_id)
+                await self._create_embeddings(documents_to_embed, record_id, virtual_record_id, collection_name, org_id=org_id, **_scope_kw(scope))
 
             if progress is not None:
                 progress.finish()
@@ -3009,7 +3071,7 @@ class VectorStore(Transformer):
             if block_ids_to_delete:
                 self.logger.debug(f"📊 Deleting {len(block_ids_to_delete)} removed blocks")
                 with stage("vector.delete"):
-                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id)
+                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id, **_scope_kw(scope))
 
             self.logger.debug(
                 f"✅ Indexing complete for record {record_id}: "
@@ -3018,9 +3080,9 @@ class VectorStore(Transformer):
 
             with stage("vector.cleanup"):
                 await self._cleanup_orphaned_embeddings_if_needed(
-                    record_id, virtual_record_id, org_id, record
+                    record_id, virtual_record_id, org_id, record, scope
                 )
-                await self._resync_membership_after_write(virtual_record_id, record_id)
+                await self._resync_membership_after_write(scope.read_vrid, record_id)
             return True
 
         except (IndexingError, VectorStoreError, DocumentProcessingError, EmbeddingError, NonRetryableError):

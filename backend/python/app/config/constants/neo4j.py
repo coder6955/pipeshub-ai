@@ -15,6 +15,8 @@ class Neo4jLabel(Enum):
     # Records and Record relations
     RECORDS = "Record"
     STAGE_STATES = "StageState"
+    CONTENT_SPLITS = "ContentSplit"
+    CONTENT_SPLIT_PARTS = "ContentSplitPart"
     RECORD_GROUPS = "RecordGroup"
     SYNC_POINTS = "SyncPoint"
 
@@ -135,6 +137,8 @@ class Neo4jRelationshipType(Enum):
 COLLECTION_TO_LABEL: dict[str, str] = {
     CollectionNames.RECORDS.value: Neo4jLabel.RECORDS.value,
     CollectionNames.STAGE_STATES.value: Neo4jLabel.STAGE_STATES.value,
+    CollectionNames.CONTENT_SPLITS.value: Neo4jLabel.CONTENT_SPLITS.value,
+    CollectionNames.CONTENT_SPLIT_PARTS.value: Neo4jLabel.CONTENT_SPLIT_PARTS.value,
     CollectionNames.RECORD_GROUPS.value: Neo4jLabel.RECORD_GROUPS.value,
     CollectionNames.SYNC_POINTS.value: Neo4jLabel.SYNC_POINTS.value,
     CollectionNames.FILES.value: Neo4jLabel.FILES.value,

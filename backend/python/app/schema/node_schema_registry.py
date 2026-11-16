@@ -86,6 +86,7 @@ from app.schema.arango.edges import (
     user_app_relation_schema,
     user_drive_relation_schema,
 )
+from app.schema.arango.documents import content_split_part_schema, content_split_schema
 
 
 def adapt_schema(arango_schema: dict | None) -> dict | None:
@@ -143,6 +144,8 @@ def _with_record_property_keys(schema: dict | None) -> dict | None:
 NODE_SCHEMA_REGISTRY: dict[str, dict | None] = {
     CollectionNames.RECORDS.value: _with_record_property_keys(adapt_schema(record_schema)),
     CollectionNames.STAGE_STATES.value: adapt_schema(stage_state_schema),
+    CollectionNames.CONTENT_SPLITS.value: adapt_schema(content_split_schema),
+    CollectionNames.CONTENT_SPLIT_PARTS.value: adapt_schema(content_split_part_schema),
     CollectionNames.DRIVES.value: None,  # No schema
     CollectionNames.FILES.value: adapt_schema(file_record_schema),
     CollectionNames.LINKS.value: adapt_schema(link_record_schema),

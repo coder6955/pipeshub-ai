@@ -15,6 +15,10 @@ ORG_ID_FIELD = "metadata.orgId"
 # of another (see app/modules/indexing/embed_resume.py).
 CONTENT_REV_FIELD = "metadata.contentRev"
 EMBED_KEY_FIELD = "metadata.embedKey"
+# Which part of a split file wrote a point, and which generation of the split: split writes filter and
+# clean up by them (see app/modules/transformers/write_scope.py).
+SEGMENT_VRID_FIELD = "metadata.segmentVirtualRecordId"
+SPLIT_GEN_FIELD = "metadata.splitGen"
 CONNECTOR_IDS_FIELD = "connectorIds"
 RECORD_GROUP_IDS_FIELD = "recordGroupIds"
 # Root of a record's group chain, so search can scope by root instead of every
@@ -27,6 +31,8 @@ PAYLOAD_KEYWORD_INDEXES = (
     (ORG_ID_FIELD, {"type": "keyword"}),
     (CONTENT_REV_FIELD, {"type": "keyword"}),
     (EMBED_KEY_FIELD, {"type": "keyword"}),
+    (SEGMENT_VRID_FIELD, {"type": "keyword"}),
+    (SPLIT_GEN_FIELD, {"type": "keyword"}),
     (CONNECTOR_IDS_FIELD, {"type": "keyword"}),
     (RECORD_GROUP_IDS_FIELD, {"type": "keyword"}),
     (ROOT_RECORD_GROUP_IDS_FIELD, {"type": "keyword"}),

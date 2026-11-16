@@ -595,6 +595,7 @@ _NESTED_SAMPLES = {
     ("agentSkills", "resources"): {"files": {"a.md": "x"}},
     ("agentSkillVersions", "resources"): {"files": {"a.md": "x"}},
     ("virtualRecordToDocIdMapping", "retired"): [{"key": "k", "at": 1}],
+    ("contentSplits", "plan"): [{"k": 1, "pageStart": 1, "pageEnd": 600, "overlapEnd": 601, "vrid": "v1", "nodeKey": "n1", "ocr": False}],
     ("artifacts", "resultSchema"): {"type": "object", "properties": {"a": {"type": "string"}}},
     ("sqlTables", "foreignKeys"): [{"column": "a", "ref": {"table": "t", "column": "id"}}],
 }

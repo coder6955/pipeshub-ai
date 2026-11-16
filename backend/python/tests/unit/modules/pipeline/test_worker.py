@@ -1226,3 +1226,62 @@ async def test_a_failing_reconcile_scan_does_not_stop_the_owed_redrives(fleet: F
     before = h.handler._redrive_passes
     assert await h.handler.retry_hold_redrives() == 1
     assert h.handler._redrive_passes == before + 1
+
+
+def _handler_with_stage_hook(h: _Harness, seen: list[tuple[str, ProgressStatus]], *, boom: bool = False) -> None:
+    async def settled(job: StageJob) -> None:
+        seen.append((job.stage, h.state(job).status))
+        if boom:
+            raise RuntimeError("parent drive failed")
+
+    h.handler = StageJobHandler(
+        h.registry, h.states, h.headlines, h.coordinator, StubIO,
+        logger=logging.getLogger("t"), worker_id="w1", clock_ms=h.clock, on_stage_settled=settled,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_stage_settled_hook_runs_after_the_state_is_terminal_for_a_run_a_failure_and_an_unchanged_job() -> None:
+    """D-28: the parent of a split file is driven from a part's stage completion; the state is already terminal."""
+    h, job = _Harness(), _job()
+    seen: list[tuple[str, ProgressStatus]] = []
+    _handler_with_stage_hook(h, seen)
+    h.seed(job)
+    await h.deliver(job)
+    assert seen == [("classify", ProgressStatus.COMPLETED)]
+
+    await h.deliver(job)  # redelivered: settled already, nothing runs and nothing is reported
+    h2, job2 = _Harness(), _job()
+    seen2: list[tuple[str, ProgressStatus]] = []
+    _handler_with_stage_hook(h2, seen2)
+    h2.seed(job2, fingerprint=h2.expected_fingerprint(job2))
+    await h2.deliver(job2)
+    assert h2.stage.runs == 0 and seen2 == [("classify", ProgressStatus.COMPLETED)], "an unchanged job settles too"
+
+    h3, job3 = _Harness(), _job()
+    seen3: list[tuple[str, ProgressStatus]] = []
+    _handler_with_stage_hook(h3, seen3)
+    h3.seed(job3)
+    h3.stage.result = StageResult(outcome=StageOutcome.FAILED, reason="rejected")
+    with pytest.raises(StageFailed):
+        await h3.deliver(job3)
+    assert seen3 == [("classify", ProgressStatus.FAILED)]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_stage_settled_hook_does_not_fail_the_stage() -> None:
+    h, job = _Harness(), _job()
+    seen: list[tuple[str, ProgressStatus]] = []
+    _handler_with_stage_hook(h, seen, boom=True)
+    h.seed(job)
+    await h.deliver(job)
+    assert h.state(job).status is ProgressStatus.COMPLETED and len(seen) == 1
+
+
+def test_the_runtime_hands_the_worker_the_parts_stage_hook() -> None:
+    from app.modules.indexing.split_rollup import part_stage_settled
+    from app.modules.pipeline import runtime
+
+    src = __import__("inspect").getsource(runtime.build_pipeline_runtime)
+    assert "on_stage_settled=part_stage_settled" in src
+    assert runtime.part_stage_settled is part_stage_settled

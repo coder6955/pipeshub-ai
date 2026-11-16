@@ -165,3 +165,26 @@ async def test_a_running_requeue_counts_as_this_connectors_reindex_and_stops_wit
             assert not _reindexing_here("c1")
         finally:
             release.set()
+
+
+async def test_a_connector_without_a_message_producer_retries_no_parts_and_still_reindexes() -> None:
+    svc = _service([])
+    svc.graph_provider.get_records_by_status = AsyncMock(return_value=[])
+    connector = _Connector()  # no data_entities_processor, as a connector double or a connector that never started has none
+
+    assert await _handle(svc, connector, {})
+
+    svc.graph_provider.get_records_by_status.assert_awaited()
+    svc.logger.warning.assert_called()
+
+
+async def test_a_user_scoped_connector_reindex_hands_the_user_to_the_failed_parts_retry() -> None:
+    svc = _service([])
+    svc.graph_provider.get_records_by_status = AsyncMock(return_value=[])
+    connector = _Connector()
+    connector.data_entities_processor = MagicMock(messaging_producer=MagicMock())
+    with patch("app.connectors.services.event_service.reindex_failed_parts", new_callable=AsyncMock, return_value=0) as retry:
+        await svc._reindex_batches(connector, "drive", "c1", "org1", None, None, 0, "user-key", ["FAILED"])
+        await svc._reindex_batches(connector, "drive", "c1", "org1", None, None, 0, None, ["FAILED"])
+
+    assert [call.kwargs["user_key"] for call in retry.await_args_list] == ["user-key", None]

@@ -98,6 +98,10 @@ class ExtractionStats(BaseModel):
     extract_ms: int = 0
 
 
+# The strategy of a split file's extraction: the union of its parts' extractions, made without a model call.
+UNION_STRATEGY = "parts"
+
+
 class NamedEntityExtraction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

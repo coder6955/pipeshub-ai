@@ -7,8 +7,11 @@ from app.modules.reconciliation.service import ReconciliationMetadata, Reconcili
 from app.modules.transformers.blob_storage import StorageLookupUnavailableError
 from app.modules.transformers.block_container_validator import BlockContainerValidator
 from app.modules.transformers.document_extraction import DocumentExtraction
+from app.modules.transformers.part_page_map import map_part_container
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.indexing.parse_now_marker import shape_status_write
+from app.modules.indexing.split_parent_flag import split_parent_active
+from app.modules.indexing.split_rollup import part_terminal
 from app.modules.transformers.transformer import (
     ENRICHMENT_DEFERRED,
     ENRICHMENT_FOLLOWS,
@@ -123,6 +126,7 @@ class IndexingPipeline:
         try:
             store_only = bool(ctx.settings.get(STORE_ONLY))
             record = ctx.record
+            await map_part_container(record, self.document_extraction.graph_provider, self.logger)
             block_containers = record.block_containers
 
             if block_containers is not None:
@@ -210,6 +214,8 @@ class IndexingPipeline:
                         "⚠️ Failed to update indexing status for record %s - record may not exist",
                         record_id,
                     )
+                    return
+                await part_terminal(record, ProgressStatus.EMPTY)
                 return
 
             if ctx.reconciliation_context is None and not store_only:
@@ -241,6 +247,12 @@ class IndexingPipeline:
     async def _dispatch_stages(self, ctx: TransformContext) -> None:
         if self.stage_ingress is None:
             raise RuntimeError("the pipeline stage runtime is not wired into this IndexingPipeline")
+        # A split parent's stages read what its parts produce, so both wait for the roll-up.
+        if split_parent_active():
+            _ = await self.stage_ingress.on_indexed(
+                ctx.record, trigger=ctx.event_type, defer_classify=True, defer_entities=True,
+            )
+            return
         _ = await self.stage_ingress.on_indexed(
             ctx.record,
             trigger=ctx.event_type,

@@ -401,6 +401,8 @@ class ContainerUtils:
         in a different collection.
         """
         from app.events.events import EventProcessor
+        from app.modules.indexing.split_wiring import build_split_runtime
+        from app.services.messaging.config import messaging_env
 
         event_processor = EventProcessor(
             logger=logger,
@@ -416,6 +418,15 @@ class ContainerUtils:
         if pipeline_runtime is not None:
             # The classify stage releases a record's QUEUED copies; their reconcile syncs membership.
             pipeline_runtime.queued_copies.bind(event_processor.sync_vector_membership)
+            event_processor.split_runtime = build_split_runtime(
+                graph=graph_provider,
+                pipeline=processor.indexing_pipeline,
+                blob_storage=sink_orchestrator.blob_storage if sink_orchestrator is not None else None,
+                leases=pipeline_runtime.record_leases,
+                publisher=pipeline_runtime.publisher,
+                lease_seconds=messaging_env.concurrency_lease_seconds,
+                ingress=pipeline_runtime.ingress,
+            )
         return event_processor
 
     async def create_parsing_client(self, config_service: object) -> "ParsingClient":

@@ -841,6 +841,17 @@ _STAGE_STATE_INDEXES = (
     "CREATE INDEX stage_state_page IF NOT EXISTS FOR (n:StageState) ON (n.connectorId, n.stage, n.status, n.id)",
 )
 
+# The split sweep reads the rows of a state by age; a split file's parts (their own label, keyed by the
+# part record) are found by their root, alone and with the generation that made them, and by the owner.
+_CONTENT_SPLIT_INDEXES = (
+    "CREATE INDEX content_split_org_state IF NOT EXISTS FOR (n:ContentSplit) ON (n.orgId, n.state)",
+    "CREATE INDEX content_split_state_updated IF NOT EXISTS FOR (n:ContentSplit) ON (n.state, n.updatedAtMs)",
+    "CREATE INDEX content_split_part_root IF NOT EXISTS FOR (n:ContentSplitPart) ON (n.rootVirtualRecordId)",
+    "CREATE INDEX content_split_part_root_gen IF NOT EXISTS FOR (n:ContentSplitPart) ON (n.rootVirtualRecordId, n.gen)",
+    "CREATE INDEX content_split_part_owner IF NOT EXISTS FOR (n:ContentSplitPart) ON (n.ownerConnectorId)",
+    "CREATE INDEX content_split_part_vrid IF NOT EXISTS FOR (n:ContentSplitPart) ON (n.virtualRecordId)",
+)
+
 
 def _unique_id_constraint(label: str) -> str:
     name = f"{label.lower()}_id_unique".replace(".", "_")
@@ -1663,6 +1674,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         indexes.extend(named_entity_neo4j_indexes())
         indexes.extend(_STAGE_STATE_INDEXES)
+        indexes.extend(_CONTENT_SPLIT_INDEXES)
         return indexes
 
     def _generate_fulltext_indexes(self) -> list[str]:
@@ -1835,8 +1847,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 raise
             self.logger.warning("Removed %d duplicate %s nodes to create their unique constraint", removed, label)
             await self.client.execute_query(constraint)
-        for index in _STAGE_STATE_INDEXES:
+        for index in (*_STAGE_STATE_INDEXES, *_CONTENT_SPLIT_INDEXES):
             await self.client.execute_query(index)
+        for split_collection in (CollectionNames.CONTENT_SPLITS.value, CollectionNames.CONTENT_SPLIT_PARTS.value):
+            await self.client.execute_query(_unique_id_constraint(collection_to_label(split_collection)))
         rows = await self.client.execute_query(
             "SHOW CONSTRAINTS YIELD labelsOrTypes, properties, type "
             "WHERE $label IN labelsOrTypes AND properties = ['id'] AND type CONTAINS 'UNIQUENESS' "
@@ -5063,6 +5077,38 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WHERE {" AND ".join(conditions)}
             SET n += $updates
             {_cypher_kh_node_state("n") if label in _KH_STATE_LABELS else ""}
+            RETURN 1 AS n
+            """,
+            parameters=parameters,
+            txn_id=transaction,
+        )
+        return bool(rows)
+
+    async def delete_node_if_match(
+        self, key: str, collection: str, expected: dict[str, Any], transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.delete_node_if_match`."""
+        if not expected:
+            raise ValueError("delete_node_if_match needs an expectation")
+        label = collection_to_label(collection)
+        parameters: dict[str, Any] = {"key": key}
+        conditions = []
+        for i, (field, value) in enumerate(expected.items()):
+            parameters[f"f{i}"] = field
+            if value is None:
+                conditions.append(f"n[$f{i}] IS NULL")
+            else:
+                parameters[f"v{i}"] = value
+                conditions.append(f"n[$f{i}] = $v{i}")
+        # The lock first, as in update_node_fields_if_match: the check reads a write that committed while this waited.
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (n:{label} {{id: $key}})
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n
+            WHERE {" AND ".join(conditions)}
+            DETACH DELETE n
             RETURN 1 AS n
             """,
             parameters=parameters,
@@ -16986,6 +17032,33 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             {"statuses": statuses, "before": updated_before_ms, "limit": limit},
         )
         return [dict(row["doc"]) for row in rows]
+
+    @override
+    async def content_splits_page(
+        self,
+        states: list[str],
+        *,
+        updated_before_ms: int | None = None,
+        after_key: str | None = None,
+        limit: int = 100,
+        org_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        collection = CollectionNames.CONTENT_SPLITS.value
+        label = collection_to_label(collection)
+        rows = await self._stage_cypher(
+            f"""
+            MATCH (n:{label})
+            WHERE n.state IN $states
+              AND ($before IS NULL OR n.updatedAtMs < $before)
+              AND ($after IS NULL OR n.id > $after)
+              AND ($org IS NULL OR n.orgId = $org)
+            RETURN properties(n) AS doc
+            ORDER BY n.id
+            LIMIT $limit
+            """,
+            {"states": states, "before": updated_before_ms, "after": after_key, "org": org_id, "limit": limit},
+        )
+        return [self._neo4j_to_arango_node(dict(row["doc"]), collection) for row in rows]
 
     @override
     async def stage_states_delete_for_virtual_records(self, virtual_record_ids: list[str]) -> int:

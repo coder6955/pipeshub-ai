@@ -204,6 +204,7 @@ class TestAbstractMethodInventory:
         "stage_state_create",
         "stage_state_compare_and_set",
         "stage_states_stale",
+        "content_splits_page",
         "stage_states_delete_for_virtual_records",
         "get_stage_states_with_records",
         "stage_states_unheld_revisions",

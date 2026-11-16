@@ -71,6 +71,9 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.lanes.lifecycle import free_lane_of_deleted_connector
 from app.utils.logging_fields import log_event, log_fields
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.modules.indexing.split_reindex import reindex_failed_parts
+from app.modules.indexing.split_rollup import SplitRollup
+from app.modules.indexing.split_state import SplitStore
 
 # Bounded because this runs inline in the sync consumer loop: a longer wait
 # stalls every other connector's events behind one delete.
@@ -1625,6 +1628,20 @@ class EventService:
             if fetched_count < batch_size:
                 break
 
+        if record_id is None and record_group_id is None and not stages:
+            # Parts of the connector's split files carry a connector of their own, so the listing above never sees them.
+            # A connector that has no processor (and so no producer) publishes nothing, parts included.
+            producer = getattr(getattr(connector, "data_entities_processor", None), "messaging_producer", None)
+            if producer is None:
+                self.logger.warning("Failed parts of %s's split files were not retried: the connector has no message producer", connector_id)
+            else:
+                store = SplitStore(self.graph_provider)
+                files = await reindex_failed_parts(
+                    self.graph_provider, store, producer,
+                    org_id=org_id, connector_id=connector_id, statuses=status_filters or [ProgressStatus.FAILED.value],
+                    rollup=SplitRollup(self.graph_provider, store), user_key=user_key,
+                )
+                total_processed += files
         self.logger.info(f"Completed reindex for {connector_name} {connector_id} connector. Total records processed: {total_processed}")
 
     async def _rerun_stage_by_state(

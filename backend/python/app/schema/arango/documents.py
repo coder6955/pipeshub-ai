@@ -561,6 +561,67 @@ stage_state_schema = {
     "message": "Document does not match the stage state schema.",
 }
 
+# One document per split file, keyed by its virtual record id (see app/modules/indexing/split_state.py).
+# ``plan`` is an array of part objects, so Neo4j stores it as a JSON string and decodes it on read.
+CONTENT_SPLIT_STATES = ["SPLITTING", "INDEXING_PARTS", "COMPLETED", "PARTIAL", "FAILED", "PURGING"]
+content_split_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "gen": {"type": "string"},
+            # Everything below the row's identity may be absent or null: a row written before a field existed reads
+            # as null, and a reader treats null as "not recorded" (see ``SplitRow.from_doc``).
+            # The inputs of ``gen`` (uuid5 of the virtual record id, these three), kept to explain it.
+            "contentRev": {"type": ["string", "null"]},
+            "planDigest": {"type": ["string", "null"]},
+            "nonce": {"type": ["string", "null"]},
+            # What the parent's own stages were last driven for (a digest of how the parts ended; empty before the first drive).
+            "redriveToken": {"type": ["string", "null"]},
+            # When the drive was claimed (ms); 0 once it finished. A claim older than the sweep's bound is reclaimed.
+            "redriveAtMs": {"type": ["number", "null"]},
+            "plan": {"type": "array", "items": {"type": "object"}},
+            "runningLines": {"type": ["array", "null"], "items": {"type": "string"}},
+            "total": {"type": "integer", "minimum": 0},
+            "done": {"type": "integer", "minimum": 0},
+            "failed": {"type": "integer", "minimum": 0},
+            "state": {"type": "string", "enum": CONTENT_SPLIT_STATES},
+            "epoch": {"type": "integer", "minimum": 0},
+            "updatedAtMs": {"type": "number"},
+        },
+        "required": ["orgId", "gen", "plan", "total", "done", "failed", "state", "epoch", "updatedAtMs"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the content split schema.",
+}
+
+# One document per part of a split file, keyed by the part record's key: everything part-specific that the
+# record itself does not carry (see app/modules/indexing/split_state.py). Immutable for the life of a generation.
+content_split_part_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "rootVirtualRecordId": {"type": "string"},
+            "gen": {"type": "string"},
+            "k": {"type": "integer", "minimum": 1},
+            "pageStart": {"type": "integer", "minimum": 1},
+            "pageEnd": {"type": "integer", "minimum": 1},
+            # Absent or null: derived from the page range, or "not recorded" (see ``PartInfo.from_doc``).
+            "pageOffset": {"type": ["integer", "null"], "minimum": 0},
+            "overlapPages": {"type": ["integer", "null"], "minimum": 0},
+            "ownerConnectorId": {"type": ["string", "null"]},
+            "virtualRecordId": {"type": ["string", "null"]},
+            "blockCount": {"type": ["integer", "null"], "minimum": 0},
+        },
+        "required": ["orgId", "rootVirtualRecordId", "gen", "k", "pageStart", "pageEnd"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the content split part schema.",
+}
+
 # File Record schema for ArangoDB
 file_record_schema = {
     "rule": {

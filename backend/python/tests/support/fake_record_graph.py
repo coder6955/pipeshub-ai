@@ -67,6 +67,8 @@ class FakeRecordGraph:
         if collection == CollectionNames.APPS.value:
             apps = [{"_key": c, "isActive": True} for c in sorted({r["connectorId"] for r in self.records.values()})]
             return apps[skip:skip + limit]
+        if collection == CollectionNames.CONTENT_SPLIT_PARTS.value:
+            return []      # no split files here: no parts to find by owner
         assert collection == CollectionNames.RECORDS.value
         matching = sorted(
             (

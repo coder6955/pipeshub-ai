@@ -41,6 +41,8 @@ from app.modules.indexing.named_entity_persist_retry import (
     _count_failure,
     _under_record_lease,
 )
+from app.modules.indexing.split_rollup import part_output_replaced
+from app.modules.indexing.split_state import is_part
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
@@ -186,6 +188,15 @@ async def _complete_one(
         return "extract_failed"
     if extraction.status == "SKIPPED":
         return "gone"
+    if is_part(record):
+        # A part writes no entity to the graph: its completed extraction replaces the one the stage kept, and the file's
+        # merge of its parts runs again. Either way the job is done ("gone" clears it).
+        async def keep_only() -> str:
+            if await keep_extraction(graph_provider, record["virtualRecordId"], record.get("contentRev"), extraction):
+                await part_output_replaced(record["virtualRecordId"])
+            return "gone"
+
+        return await _under_record_lease(concurrency_manager, record_id, keep_only)
 
     async def persist_and_keep() -> str:
         outcome = await sink.persist_named_entities(ctx, extraction, retry_due=due, retry_attempts=attempts)

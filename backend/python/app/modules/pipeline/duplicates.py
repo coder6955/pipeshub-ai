@@ -16,6 +16,8 @@ from collections.abc import Awaitable, Callable, Sequence
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.modules.indexing.duplicate_reconcile import DuplicateReconciler
+from app.modules.indexing.owner_connector import owner_connector_id
+from app.modules.indexing.split_state import prime_parts
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
@@ -90,9 +92,10 @@ class QueuedCopies:
         if promoted > 0 and self._on_promoted is not None:
             await self._on_promoted(record_id, virtual_record_id)
         if promoted > 0 and indexing_status == ProgressStatus.COMPLETED.value:
+            await prime_parts([record], self._graph)
             await notify_record_indexed(
                 connector_name=record.get("connectorName"),
-                connector_id=record.get("connectorId"),
+                connector_id=owner_connector_id(record),
                 external_record_group_id=record.get("externalGroupId"),
                 org_id=record.get("orgId"),
             )

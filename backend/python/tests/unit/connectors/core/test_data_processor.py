@@ -3107,6 +3107,13 @@ class TestStageRerunEvents:
         assert proc._reindex_event_payload(record, vector_db_only=False, stages=["classify"])["stages"] == ["classify"]
         assert "stages" not in proc._reindex_event_payload(record, vector_db_only=False)
 
+    def test_a_forced_event_carries_the_time_it_was_requested(self) -> None:
+        proc = _make_processor()
+        record = _make_record()
+        record.id = "rec-1"
+        payload = proc._reindex_event_payload(record, vector_db_only=False)
+        assert payload["forceReindex"] is True and isinstance(payload["forceReindexAt"], int) and payload["forceReindexAt"] > 0
+
     @pytest.mark.asyncio
     async def test_a_stage_rerun_leaves_the_record_searchable(self) -> None:
         proc = _make_processor()

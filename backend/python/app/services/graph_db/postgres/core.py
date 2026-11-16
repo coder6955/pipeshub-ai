@@ -292,6 +292,20 @@ class CoreMixin(PgBase):
                                      org, collection, key, _j(upd), _j(expected), clock_at_most)
         return bool(await self._q(go, transaction, write=True))
 
+    async def delete_node_if_match(self, key: str, collection: str, expected: dict, transaction: str | None = None) -> bool:
+        if not expected:
+            raise ValueError("delete_node_if_match needs an expectation")
+        org = current_org_id()
+
+        async def go(tx: Tx) -> int:
+            # The row lock first, in a statement of its own (as update_node_fields_if_match): the expectation is an anti-join, which a writer that
+            # waited for the lock does not re-check against the row it then deletes.
+            await tx.execute("/* pipeshub:graph.lock_node */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = $3 FOR UPDATE", org, collection, key)
+            return await tx.fetchval("""/* pipeshub:graph.delete_node_if_match */ WITH d AS (DELETE FROM graph.nodes n
+            WHERE org_id = $1 AND coll = $2 AND id = $3 AND NOT EXISTS (SELECT 1 FROM jsonb_each($4::jsonb) f WHERE n.doc->f.key IS DISTINCT FROM f.value
+                AND NOT (f.value = 'null'::jsonb AND n.doc->f.key IS NULL)) RETURNING 1) SELECT count(*) FROM d""", org, collection, key, _j(expected))
+        return bool(await self._q(go, transaction, write=True))
+
     async def update_node_fields_if(self, key: str, collection: str, updates: dict, conditions: Sequence[Cond], transaction: str | None = None) -> bool:
         """``update_node_fields_if_match`` with the operators of ``Cond``, each as ``conditions.holds`` reads it: an absent or null field passes
         every operator but ``eq``; ``null_or_le`` passes only a stored number (a boolean or a string is never "not newer")."""

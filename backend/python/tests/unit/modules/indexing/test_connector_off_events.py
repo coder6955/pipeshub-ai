@@ -295,6 +295,56 @@ class TestGraphConnectorOffFilter:
         }
         assert {r["indexingStatus"] for k, r in graph.records.items()} == {ProgressStatus.AUTO_INDEX_OFF.value}
 
+    async def test_a_part_with_no_document_is_left_out_and_the_batch_is_still_settled(self) -> None:
+        from app.modules.indexing.split_state import clear_part_cache
+
+        clear_part_cache()
+        graph = FakeConnectorGraph()
+        graph.add_connector("conn-off", active=False)
+        graph.add_record("r1", "conn-off")
+        graph.add_record("orphan-part", "pdfparts_org-1")
+        ordinary = graph.get_document
+
+        async def get_document(key, collection, *a, **kw):  # noqa: ANN202
+            return None if collection == "contentSplitParts" else await ordinary(key, collection, *a, **kw)
+
+        graph.get_document = get_document  # type: ignore[method-assign]
+        messages = [_message(record_id="orphan-part", connector_id="conn-off"), _message(record_id="r1")]
+
+        result = await _filter(graph).settle(messages)
+
+        assert result.settled == frozenset({1}), "the ordinary record is settled; the part is judged unread, not the batch failed"
+        assert graph.records["r1"]["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
+
+    async def test_a_part_read_that_stalls_pauses_the_filter_within_the_read_deadline(self) -> None:
+        import asyncio
+
+        from app.modules.indexing.split_state import clear_part_cache
+
+        clear_part_cache()
+        graph = FakeConnectorGraph()
+        graph.add_connector("conn-off", active=False)
+        graph.add_record("r1", "conn-off")
+        graph.add_record("stalled-part", "pdfparts_org-1")
+
+        async def get_document(key, collection, *a, **kw):  # noqa: ANN202
+            await asyncio.sleep(30)
+
+        graph.get_document = get_document  # type: ignore[method-assign]
+        clock = [0.0]
+        connector_filter = GraphConnectorOffFilter(
+            graph, logging.getLogger("t"), 15.0, read_timeout_seconds=0.2, clock=lambda: clock[0],
+        )
+
+        async with asyncio.timeout(5):
+            result = await connector_filter.settle([_message(record_id="stalled-part", connector_id="conn-off"), _message(record_id="r1")])
+
+        assert result.settled == frozenset(), "a stalled read settles nothing"
+        assert graph.records["r1"]["indexingStatus"] == ProgressStatus.QUEUED.value
+        calls = sum(graph.calls.values())
+        assert (await connector_filter.settle([_message(record_id="r1")])).settled == frozenset()
+        assert sum(graph.calls.values()) == calls, "the filter is paused: no further read until the pause ends"
+
     async def test_a_connector_known_to_be_on_costs_no_graph_call_until_it_is_due_a_refresh(self) -> None:
         graph = FakeConnectorGraph()
         graph.add_connector("conn-on", active=True)

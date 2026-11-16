@@ -5,7 +5,7 @@ import json
 import logging
 import os
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from bs4 import BeautifulSoup
@@ -54,22 +54,38 @@ from app.modules.indexing.embed_resume import (
     marker_of,
     may_resume,
 )
+from app.modules.indexing.owner_connector import is_part_record, owner_connector_id
 from app.modules.indexing.parse_now_marker import (
     current_run,
     run_settings,
     shape_status_write,
     store_only_active,
 )
+from app.modules.indexing.part_gate import PartContext, PartStop, check_part
+from app.modules.indexing.pdf_kind import is_pdf as _is_pdf
 from app.modules.indexing.record_progress import carried_counters, current_progress
+from app.modules.indexing.split_parent_flag import begin_split_parent, end_split_parent
+from app.modules.indexing.split_reindex import forced_nonce
+from app.modules.indexing.split_rollup import part_terminal
+from app.modules.indexing.split_seam import (
+    SplitOutcome,
+    SplitRequest,
+    count_pdf_pages,
+    manifest_markdown,
+)
+from app.modules.indexing.split_state import PartInfoMissing, SplitState, part_info
 from app.modules.parsers.code_parser.file_role import is_generated_file_name
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
 from app.modules.parsers.code_parser.secret_scan import redact_secrets_bytes
 from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.modules.parsers.file_prep import bound_text, needs_preparing, prepare_file
-from app.modules.parsers.pdf.untrusted_pdf import inspect_untrusted_pdf
+from app.modules.parsers.pdf.split.config import SplitConfig
+from app.modules.parsers.pdf.split.plan import should_split
+from app.modules.parsers.pdf.untrusted_pdf import InspectedPdf, inspect_untrusted_pdf
 from app.modules.pipeline.fingerprint import content_revision
 from app.modules.pipeline.ingress import StageIngress
 from app.modules.reconciliation.service import ReconciliationMetadata
+from app.modules.transformers.part_page_map import map_part_container
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import ENRICHMENT_DEFERRED, ENRICHMENT_FOLLOWS
@@ -123,6 +139,9 @@ def _record_key(doc: dict[str, Any] | None) -> str | None:
     return (doc.get("_key") or doc.get("id")) if doc is not None else None
 
 
+if TYPE_CHECKING:
+    from app.modules.indexing.split_wiring import SplitRuntime
+
 _PARSE_DONE = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
 
 
@@ -172,6 +191,8 @@ class EventProcessor:
         self.sink_orchestrator = sink_orchestrator
         # Hands searchable records to the pipeline stages (classification and after).
         self.stage_ingress = stage_ingress
+        # Set once the indexing process has its lease manager and producer (see split_wiring).
+        self.split_runtime: SplitRuntime | None = None
         # Pure/synchronous — only used to compare "does this duplicate resolve
         # to the same collection as the record being processed", never for I/O.
         self.collection_strategy = collection_strategy or SingleCollectionStrategy()
@@ -312,15 +333,22 @@ class EventProcessor:
         virtual_record_id: str,
         event_type: str | None = None,
         prev_virtual_record_id: str | None = None,
+        inspected: InspectedPdf | None = None,
+        part: PartContext | None = None,
     ) -> AsyncGenerator[PipelineEvent, None]:
         """Route PDF bytes to OCR, pdfplumber+OpenCV, or Docling — whichever the
         existing PDF pipeline would pick for a native PDF.
+
+        *inspected* is the inspection the caller already made of these bytes. A *part* of a split
+        file reads the plan's OCR hint and never goes to Docling: the layout parser keeps its text
+        in the page order the roll-up expects.
         """
         self.logger.info("🔍 Checking if PDF needs OCR processing")
-        inspected = await inspect_untrusted_pdf(pdf_binary, label=record_name)
+        if inspected is None:
+            inspected = await inspect_untrusted_pdf(pdf_binary, label=record_name)
         # Every parser below reads the bytes that passed inspection.
         pdf_binary = inspected.content
-        needs_ocr = inspected.needs_ocr
+        needs_ocr = part.ocr if part is not None and part.ocr is not None else inspected.needs_ocr
         self.logger.info("📊 OCR requirement: %s", 'YES - Using OCR handler' if needs_ocr else 'NO - Using layout parser')
 
         if needs_ocr:
@@ -348,6 +376,8 @@ class EventProcessor:
         use_pdfplumber = os.environ.get("ENABLE_PDFPLUMBER_PROCESSOR", "false").lower() == "true"
         if use_pdfplumber:
             self.logger.info("📄 Using PdfPlumber+OpenCV processor (ENABLE_PDFPLUMBER_PROCESSOR=true)")
+        elif part is not None:
+            self.logger.info("Part %d of a split PDF; using the PdfPlumber+OpenCV processor", part.k)
         elif not within_docling_size_limit(len(pdf_binary)):
             self.logger.info("📄 PDF is larger than Docling accepts; using the PdfPlumber+OpenCV processor")
         elif not docling_takes(len(pdf_binary), inspected.page_count):
@@ -406,6 +436,113 @@ class EventProcessor:
             if event.event == IndexingEvent.PARSING_COMPLETE:
                 pdf_binary = inspected = None
             yield event
+
+    def _may_split(
+        self, extension: str | None, mime_type: str | None, part: PartContext | None, *, store_only: bool,
+    ) -> bool:
+        return (
+            self.split_runtime is not None
+            and part is None
+            and not store_only
+            and _is_pdf(extension, mime_type)
+        )
+
+    async def _has_split_generation(self, virtual_record_id: str | None, extension: str | None, mime_type: str | None) -> bool:
+        if self.split_runtime is None or not virtual_record_id or not _is_pdf(extension, mime_type):
+            return False
+        return await self.split_runtime.store.get(virtual_record_id) is not None
+
+    async def _split_before_inspection(
+        self, *, doc: dict[str, Any], record_name: str, org_id: str, virtual_record_id: str,
+        content: bytes, content_rev: str, force_nonce: str,
+    ) -> SplitOutcome | None:
+        """Split a PDF over the threshold on the page count of a pdfium-only open, without the whole-file
+        inspection (pdfminer open and a full pdfium rewrite), which runs a very large file out of memory.
+        Each part is inspected on its own when it is indexed. None: not over the threshold, or pdfium cannot
+        open the file; the caller inspects it as before. A locked file raises ``PasswordProtectedError``."""
+        runtime = self.split_runtime
+        cfg = SplitConfig.from_env()
+        if runtime is None:
+            return None
+        if not cfg.enabled:
+            # The flag governs making new splits only: a file already split stays split while its content is unchanged
+            # (a retry, a restore, a reindex), without counting or inspecting the whole file.
+            return await self._keep_existing_split(
+                doc=doc, org_id=org_id, virtual_record_id=virtual_record_id, content=content, content_rev=content_rev,
+            )
+        page_count = await count_pdf_pages(content, record_name)
+        if page_count is None or not should_split(page_count, cfg):
+            return None
+        return await runtime.seam.split(SplitRequest(
+            parent=doc, v=virtual_record_id, org_id=org_id, content=content, content_rev=content_rev,
+            page_count=page_count, needs_ocr=None, nonce=force_nonce,
+        ))
+
+    async def _keep_existing_split(
+        self, *, doc: dict[str, Any], org_id: str, virtual_record_id: str, content: bytes, content_rev: str,
+    ) -> SplitOutcome | None:
+        """The split this content already has, continued (never re-cut: the event's nonce is dropped), or None when
+        there is none or the content changed, in which case the file is indexed whole as the operator asked."""
+        runtime = self.split_runtime
+        if runtime is None:
+            return None
+        row = await runtime.store.get(virtual_record_id)
+        if row is None or row.state is SplitState.PURGING or row.content_rev != content_rev or not row.parts:
+            return None
+        return await runtime.seam.split(SplitRequest(
+            parent=doc, v=virtual_record_id, org_id=org_id, content=content, content_rev=content_rev,
+            page_count=row.parts[-1].page_end, needs_ocr=None, nonce="", may_heal=False,
+        ))
+
+    async def _split_or_unsplit(
+        self, *, doc: dict[str, Any], record_name: str, org_id: str, virtual_record_id: str,
+        content: bytes, content_rev: str, inspected: InspectedPdf, force_nonce: str,
+    ) -> SplitOutcome | None:
+        """Split the parent when it is long enough; otherwise retire the parts it had as a longer file.
+
+        A PDF only pdfium can open has no page count, so it is indexed whole, unless it already has a split of this very
+        content: a missing count says nothing about unchanged content, so that split is continued, never undone.
+        """
+        runtime = self.split_runtime
+        if runtime is None:
+            return None
+        if inspected.page_count is None:
+            kept = await self._keep_existing_split(
+                doc=doc, org_id=org_id, virtual_record_id=virtual_record_id, content=content, content_rev=content_rev,
+            )
+            if kept is not None:
+                return kept
+        if inspected.page_count is not None and should_split(inspected.page_count, SplitConfig.from_env()):
+            return await runtime.seam.split(SplitRequest(
+                parent=doc, v=virtual_record_id, org_id=org_id, content=content, content_rev=content_rev,
+                page_count=inspected.page_count, needs_ocr=inspected.needs_ocr, nonce=force_nonce,
+            ))
+        await runtime.seam.unsplit(virtual_record_id)
+        return None
+
+    async def _index_manifest(
+        self, split: SplitOutcome, *, record_id: str, record_name: str, virtual_record_id: str,
+        event_type: str, prev_virtual_record_id: str | None,
+    ) -> AsyncGenerator[PipelineEvent, None]:
+        """Index what the parent keeps under its own id: the part table. The roll-up of its parts drives
+        classification and entity extraction, so neither stage is dispatched here.
+
+        The manifest's points are the file's own segment: ``begin_split_parent`` makes the vector writes stamp
+        ``segmentVirtualRecordId`` with the parent's id and the generation, so they are told apart from every part's.
+        """
+        begin_split_parent(split.row.gen)
+        try:
+            async for event in self.processor.process_md_document(
+                recordName=record_name,
+                recordId=record_id,
+                md_binary=manifest_markdown(split.row, record_name),
+                virtual_record_id=virtual_record_id,
+                event_type=event_type,
+                prev_virtual_record_id=prev_virtual_record_id,
+            ):
+                yield event
+        finally:
+            end_split_parent()
 
     @staticmethod
     def _reads_as_code_file(
@@ -493,7 +630,7 @@ class EventProcessor:
         """
         from app.events.processor import convert_record_dict_to_record  # noqa: PLC0415
         from app.modules.transformers.transformer import (
-            TransformContext,  # noqa: PLC0415
+            TransformContext,
         )
 
         if self.parsing_client is None or self.extraction_client is None or self.sink_orchestrator is None:
@@ -583,6 +720,7 @@ class EventProcessor:
                 "Failed to persist EMPTY status for record",
                 record_doc,
             )
+            await part_terminal(record_doc, ProgressStatus.EMPTY)
             yield PipelineEvent(
                 event=IndexingEvent.INDEXING_COMPLETE,
                 data=PipelineEventData(record_id=record_id),
@@ -599,6 +737,7 @@ class EventProcessor:
         record.block_containers = block_container
         record.virtual_record_id = virtual_record_id
         record.org_id = org_id
+        await map_part_container(record, self.graph_provider, self.logger)
 
         ctx = TransformContext(
             record=record,
@@ -838,6 +977,7 @@ class EventProcessor:
         self.logger.debug(
             f"🔍 Record {record_id}: Successfully updated status to {status.value}"
         )
+        await part_terminal(doc, status)
 
 
 
@@ -868,7 +1008,7 @@ class EventProcessor:
         )
 
         if should_normalize_html:
-            try: 
+            try:
                 # self.logger.info(f"🔍 Normalizing HTML for dedup: {content}")
                 html_str = content.decode("utf-8") if isinstance(content, bytes) else content
                 # self.logger.info(f"🔍 HTML string: {html_str}")
@@ -883,8 +1023,8 @@ class EventProcessor:
                 text = soup.get_text(separator="\n", strip=True)
                 if text:
                     return text.encode("utf-8")
-                # self.info(f"🔍 HTML normalized for dedup: {text}")  
-                return content    
+                # self.info(f"🔍 HTML normalized for dedup: {text}")
+                return content
             except Exception as e:
                 self.logger.error(f"❌ Error normalizing HTML for dedup: {repr(e)}")
                 return content
@@ -1070,6 +1210,7 @@ class EventProcessor:
             current_collection,
             self._resolve_write_collection,
             enrichment_live_after_ms=enrichment_live_after_ms,
+            current=doc,
         )
         if match is None:
             self.logger.info(
@@ -1507,6 +1648,27 @@ class EventProcessor:
                 )
                 return
 
+            part_context: PartContext | None = None
+            if is_part_record(record):
+                # Read once (cached): the owner accessors below answer for the part from it.
+                try:
+                    part = await part_info(record, self.graph_provider)
+                except PartInfoMissing as exc:
+                    # Fail closed: nothing says whose it is, and it may be written by the attempt that is still creating it.
+                    raise IndexingError(str(exc), details={"record_id": record_id}) from exc
+            if is_part_record(record) and self.split_runtime is not None:
+                gate = await check_part(self.graph_provider, self.split_runtime.store, part)
+                if isinstance(gate, PartStop):
+                    self.logger.info("Part %s is not indexed: %s", record_id, gate.reason)
+                    await self.update_record_fields(
+                        dict(record),
+                        {"indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value, "reason": gate.reason},
+                    )
+                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    return
+                part_context = gate
+
             # A retry repeats the original message, which still holds the id from
             # before its first attempt; the record holds the one that attempt saved.
             virtual_record_id = record.get("virtualRecordId") or virtual_record_id
@@ -1633,7 +1795,7 @@ class EventProcessor:
                         await self._discard_embed_marker(doc, embed_marker, org_id)
                     await notify_record_indexed(
                         connector_name=doc.get("connectorName"),
-                        connector_id=doc.get("connectorId"),
+                        connector_id=owner_connector_id(doc),
                         external_record_group_id=doc.get("externalGroupId"),
                         org_id=doc.get("orgId"),
                     )
@@ -1641,6 +1803,10 @@ class EventProcessor:
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     return
                 rebuild_shared_vrid = dedup_decision.rebuild_shared_vrid
+                if rebuild_shared_vrid and await self._has_split_generation(doc.get("virtualRecordId"), extension, mime_type):
+                    # Rebuilding in place would rewrite the manifest under parts that belong to the generation;
+                    # the split seam re-indexes the manifest of the generation instead.
+                    rebuild_shared_vrid = False
                 if dedup_decision.virtual_record_id:
                     # Different-collection duplicate: content identity was copied
                     # onto `doc` inside _check_duplicate_by_md5; pick it up here
@@ -1750,6 +1916,9 @@ class EventProcessor:
                 and not rebuild_shared_vrid
                 and not dedup_decision.virtual_record_id
             )
+            if resumable_kind and await self._has_split_generation(virtual_record_id, extension, mime_type):
+                # A split parent indexes its manifest, not stored blocks of an earlier whole-file attempt.
+                resumable_kind = False
             checkpoint = None
             if resumable_kind and may_resume(
                 embed_marker,
@@ -1905,6 +2074,30 @@ class EventProcessor:
                     size_bytes=size_bytes,
                 ),
             )
+
+            inspected_pdf: InspectedPdf | None = None
+            if self._may_split(extension, mime_type, part_context, store_only=store_only) and isinstance(file_content, (bytes, bytearray)):
+                force_nonce = forced_nonce(event_data, delivery_id)
+                split = await self._split_before_inspection(
+                    doc=doc, record_name=record_name, org_id=org_id, virtual_record_id=virtual_record_id,
+                    content=bytes(file_content), content_rev=content_rev, force_nonce=force_nonce,
+                )
+                if split is None:
+                    inspected_pdf = await inspect_untrusted_pdf(bytes(file_content), label=record_name)
+                    split = await self._split_or_unsplit(
+                        doc=doc, record_name=record_name, org_id=org_id, virtual_record_id=virtual_record_id,
+                        content=inspected_pdf.content, content_rev=content_rev, inspected=inspected_pdf,
+                        force_nonce=force_nonce,
+                    )
+                if split is not None:
+                    file_content = None
+                    inspected_pdf = None
+                    async for event in self._index_manifest(
+                        split, record_id=record_id, record_name=record_name, virtual_record_id=virtual_record_id,
+                        event_type=event_type, prev_virtual_record_id=prev_virtual_record_id,
+                    ):
+                        yield event
+                    return
 
             if scans_for_secrets:
                 # Once, ahead of both pipelines: blocks, embeddings, LLM
@@ -2149,6 +2342,8 @@ class EventProcessor:
 
             if route is Route.PDF:
                 async for event in self._dispatch_pdf_binary(
+                    inspected=inspected_pdf,
+                    part=part_context,
                     record_name=record_name,
                     record_id=record_id,
                     record_version=record_version,

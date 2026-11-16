@@ -46,6 +46,7 @@ from app.modules.code_graph.block_projection import (
     write_code_file_blocks_to_graph,
 )
 from app.modules.indexing.embed_resume import chain_end_fields
+from app.modules.indexing.split_rollup import part_terminal
 from app.modules.indexing.parse_now_marker import (
     run_settings,
     shape_status_write,
@@ -1632,6 +1633,7 @@ class Processor:
                 record_id,
             )
             return
+        await part_terminal(record, indexing_status)
 
     async def process_html_document(
         self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None,

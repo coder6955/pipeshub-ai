@@ -540,3 +540,38 @@ async def test_regression_guard_a_legacy_job_without_an_org_still_runs_unbound()
     await _drain_bound(graph)
 
     assert graph.calls[1:] == [("read", "legacy", None), ("clear", "legacy", None)]
+
+
+async def test_a_completed_part_replaces_its_kept_extraction_writes_no_entity_and_drives_the_file_again() -> None:
+    """A part's graph write belongs to the file's union, so its completion only replaces the kept output, ends the job, and
+    re-drives the file's merge."""
+    extraction = NamedEntityExtraction(status="COMPLETED", strategy="single_call", termination_reason="single_call")
+    part = {**_RECORD, "connectorId": "pdfparts_o1"}
+    graph = _graph([], part)
+    sink = _sink(_BLOB, extraction)
+    driven: list[str] = []
+
+    async def driven_again(vrid: str | None) -> None:
+        driven.append(str(vrid))
+
+    with patch("app.events.processor.convert_record_dict_to_record", return_value=SimpleNamespace(id="r1")), \
+            patch("app.modules.transformers.transformer.TransformContext", _context), \
+            patch.object(completion, "part_output_replaced", driven_again):
+        outcome = await completion._complete_one(graph, sink, None, "r1", "o1", 100, 0)
+
+    assert outcome == "gone", "the job is done: nothing is persisted for the part"
+    sink.persist_named_entities.assert_not_awaited()
+    assert graph.stage_state_compare_and_set.await_args.args[0] == "v1:rev-a:entities"
+    assert driven == ["v1"]
+
+
+async def test_a_part_whose_kept_state_was_not_replaced_does_not_drive_the_file() -> None:
+    extraction = NamedEntityExtraction(status="COMPLETED", strategy="single_call", termination_reason="single_call")
+    graph = _graph([], {**_RECORD, "connectorId": "pdfparts_o1"})
+    graph.stage_state_compare_and_set = AsyncMock(return_value=False)
+    driven = AsyncMock()
+    with patch("app.events.processor.convert_record_dict_to_record", return_value=SimpleNamespace(id="r1")), \
+            patch("app.modules.transformers.transformer.TransformContext", _context), \
+            patch.object(completion, "part_output_replaced", driven):
+        assert await completion._complete_one(graph, _sink(_BLOB, extraction), None, "r1", "o1", 100, 0) == "gone"
+    driven.assert_not_awaited()

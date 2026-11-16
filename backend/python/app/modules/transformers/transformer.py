@@ -36,6 +36,10 @@ PARSE_NOW = "parse_now"
 #: reconciliation metadata, no status on the record, no hand-off to the pipeline stages.
 STORE_ONLY = "store_only"
 
+#: ``TransformContext.settings`` key: the record is a split parent and this is the generation its points are stamped with
+#: (``segmentVirtualRecordId`` = its own vrid, ``splitGen``). Set where the manifest's context is not in scope, e.g. the classify stage.
+SPLIT_PARENT_GEN = "split_parent_gen"
+
 
 class TransformContext(BaseModel):
     record: Record

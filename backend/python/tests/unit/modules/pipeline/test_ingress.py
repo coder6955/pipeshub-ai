@@ -183,3 +183,10 @@ async def test_an_indexed_queued_record_without_a_revision_lost_its_hand_off() -
     ingress, coordinator, _ = _ingress(None)
     coordinator.has_seen_revision = AsyncMock(return_value=True)
     assert await ingress.handoff_lost({**_INDEXED_QUEUED, "contentRev": None}) is True
+
+
+@pytest.mark.asyncio
+async def test_a_split_parent_records_embed_and_dispatches_neither_classify_nor_entities() -> None:
+    ingress, coordinator, _ = _ingress({"contentRev": "abc"})
+    await ingress.on_indexed(_record(), trigger="newRecord", defer_classify=True, defer_entities=True)
+    assert coordinator.on_external_done.await_args.kwargs["defer"] == frozenset({"classify", "entities"})

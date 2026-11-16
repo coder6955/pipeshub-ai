@@ -14,6 +14,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.models.blocks import BlocksContainer
 from app.modules.artifacts.sidecars import ENTITIES, ArtifactSidecars
+from app.modules.indexing.split_state import is_part
 from app.modules.named_entities.domain.config import load_named_entity_config
 from app.modules.named_entities.domain.models import NamedEntityExtraction
 from app.modules.pipeline.leases import RecordLeases, RevisionSuperseded
@@ -33,6 +34,7 @@ from app.utils.indexing_timing import stage
 from app.utils.llm import indexing_model_identity, load_ai_models
 
 if TYPE_CHECKING:
+    from app.modules.indexing.split_inputs import EntitiesInput, ParentInputs
     from app.modules.transformers.blob_storage import BlobStorage
     from app.modules.transformers.sink_orchestrator import SinkOrchestrator
     from app.services.extraction.client import ExtractionClient
@@ -57,6 +59,7 @@ class GraphEntitiesIO(RecordStageIO):
         extraction_client: "ExtractionClient | None" = None,
         logger: logging.Logger | None = None,
         sidecars: ArtifactSidecars | None = None,
+        split_inputs: "ParentInputs | None" = None,
     ) -> None:
         super().__init__(
             job,
@@ -74,6 +77,9 @@ class GraphEntitiesIO(RecordStageIO):
         self._sidecars = sidecars
         self._logger = logger or logging.getLogger(__name__)
         self._enabled: bool | None = None
+        self._split_inputs = split_inputs
+        self._parent_input: EntitiesInput | None = None
+        self._parent_input_read = False
 
     async def _stored_run(self, job: StageJob) -> str | None:
         """The stored write holding the job's revision now: the sidecar goes into its set. None when the
@@ -82,6 +88,18 @@ class GraphEntitiesIO(RecordStageIO):
             job.virtual_record_id, CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
         ) or {}
         return mapping.get("storedRun") if mapping.get("storedRev") == job.rev else None
+
+    async def _parent_entities_input(self, job: StageJob) -> "EntitiesInput | None":
+        """The union of the parts' extractions when the job's file is a split parent, else None. Read once per job."""
+        if not self._parent_input_read:
+            self._parent_input_read = True
+            if self._split_inputs is not None and await self._may_be_split(job):
+                self._parent_input = await self._split_inputs.entities(job.virtual_record_id)
+        return self._parent_input
+
+    async def input_digest(self, job: StageJob) -> str:
+        parent = await self._parent_entities_input(job)
+        return parent.digest if parent is not None else job.text_digest
 
     async def enabled(self) -> bool:
         if self._enabled is None:
@@ -111,6 +129,10 @@ class GraphEntitiesIO(RecordStageIO):
         ctx = await self._context(job.record_ids[0], blocks)
         if ctx is None:
             raise RevisionSuperseded(job.record_ids[0])
+        parent = await self._parent_entities_input(job)
+        if parent is not None:
+            # What the parts found, put together: no model call, so a re-drive is free.
+            return parent.extraction
         with stage("entities.extract"):
             return await self._sink.extract_named_entities(ctx, client=self._extraction_client)
 
@@ -120,6 +142,12 @@ class GraphEntitiesIO(RecordStageIO):
         """Each record's entities in the graph and the entity points, under its lease. Returns
         the owner's persist outcome (``written``, ``kept``, ``disabled``, ...)."""
         owner = record_ids[0]
+        if is_part(await self._document(owner)):
+            # The extraction is kept as the stage's output; the file's own entities are written once, from the union.
+            # A part that left text unread is extracted again itself: the file holds only a manifest, so it is the part's
+            # completion that replaces this output and re-drives the file's merge.
+            await self._queue_part_reextract(job, owner, extraction)
+            return "kept"
         outcomes: dict[str, str] = {}
 
         async def persist(record_id: str) -> None:
@@ -146,6 +174,19 @@ class GraphEntitiesIO(RecordStageIO):
         if outcome == "written":
             await self._copy_to_promoted_copies(job, owner, set(record_ids))
         return outcome
+
+    async def _queue_part_reextract(self, job: StageJob, part_key: str, extraction: NamedEntityExtraction) -> None:
+        from app.modules.named_entities.stage import needs_reextract
+
+        if not needs_reextract(extraction):
+            return
+        try:
+            await self._graph.schedule_named_entity_reextract(job.org_id, part_key)
+        except Exception as exc:
+            # The part keeps the extraction it has until it is next indexed.
+            self._logger.warning(
+                "Named-entity re-extraction of part %s could not be queued: %s", part_key, type(exc).__name__
+            )
 
     async def _copy_to_promoted_copies(self, job: StageJob, owner: str, bound: set[str]) -> None:
         """Copies of the content promoted before this run finished took the owner's mentions

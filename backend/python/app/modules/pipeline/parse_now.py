@@ -24,6 +24,8 @@ from app.modules.indexing.connector_off_events import (
     connector_state,
     gating_connector_id,
 )
+from app.modules.indexing.owner_connector import owner_connector_id
+from app.modules.indexing.split_state import prime_parts
 from app.modules.pipeline.first_use import _get_producer
 from app.services.graph_db.common.record_visibility import (
     is_live_record,
@@ -138,7 +140,7 @@ def parse_now_event(record_id: str, doc: dict[str, Any], org_id: str, user_id: s
             "recordId": record_id,
             "orgId": org_id,
             "virtualRecordId": doc.get("virtualRecordId"),
-            "connectorId": doc.get("connectorId"),
+            "connectorId": owner_connector_id(doc),
             "connectorName": doc.get("connectorName"),
             "mimeType": doc.get("mimeType"),
             "parseNow": True,
@@ -175,6 +177,7 @@ class ParseNow:
             return False, status
         if (ended := terminal_marker_status(doc)) is not None:
             return False, ended
+        await prime_parts([doc], graph_provider)
         connector_id = gating_connector_id(doc)
         if connector_id is None:
             return True, status

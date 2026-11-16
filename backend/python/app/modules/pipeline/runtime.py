@@ -12,6 +12,8 @@ from app.config.constants.arangodb import ProgressStatus
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.modules.artifacts.sidecars import ArtifactSidecars
 from app.modules.artifacts.store import NodeArtifactStore
+from app.modules.indexing.split_inputs import ParentInputs
+from app.modules.indexing.split_rollup import part_stage_settled
 from app.modules.pipeline.connector_gate import ConnectorDeletingCheck
 from app.modules.pipeline.coordinator import Coordinator
 from app.modules.pipeline.duplicates import QueuedCopies
@@ -138,6 +140,8 @@ def build_pipeline_runtime(
         pause_store=pause_store,
     )
 
+    split_inputs = ParentInputs(graph)
+
     def io_for(job: StageJob, deadline: Deadline) -> StageIO:
         if job.stage == EntitiesStage.name:
             return GraphEntitiesIO(
@@ -154,6 +158,7 @@ def build_pipeline_runtime(
                 extraction_client=extraction_client if use_service else None,
                 logger=logger,
                 sidecars=sidecars,
+                split_inputs=split_inputs,
             )
         return GraphClassifyIO(
             job,
@@ -168,6 +173,7 @@ def build_pipeline_runtime(
             record_leases=record_leases,
             connector_deleting=connector_deleting,
             sidecars=sidecars,
+            split_inputs=split_inputs,
         )
 
     async def on_headline_settled(job: StageJob, record_ids: Sequence[str], status: ProgressStatus) -> None:
@@ -184,6 +190,7 @@ def build_pipeline_runtime(
         handler=StageJobHandler(
             registry, states, headlines, coordinator, io_for, logger=logger, on_headline_settled=on_headline_settled,
             pause_judge=PauseJudge(pause_store, logger=logger, limits_source=spend_limits_source(config_service)),
+            on_stage_settled=part_stage_settled,
         ),
         publisher=publisher,
         # Both are bounded by the LLM, so each shares the existing indexing LLM cap rather

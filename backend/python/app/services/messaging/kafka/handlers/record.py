@@ -29,6 +29,7 @@ from app.config.constants.service import (
 )
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
+from app.core.org_context import for_org
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.models.blocks import BlocksContainer, SemanticMetadata
@@ -59,6 +60,7 @@ from app.modules.indexing.connector_off_events import (
 )
 from app.modules.indexing.duplicate_reconcile import DuplicateReconciler
 from app.modules.indexing.embed_resume import chain_end_fields, end_attempt
+from app.modules.indexing.owner_connector import owner_connector_id
 from app.modules.indexing.parse_now_marker import (
     PARSE_NOW_REV,
     PARSE_NOW_STATUS,
@@ -71,6 +73,7 @@ from app.modules.indexing.parse_now_marker import (
     shape_status_write,
     store_only_active,
 )
+from app.modules.indexing.pdf_kind import is_pdf
 from app.modules.indexing.rate_limit_deferral import (
     cleared_deferral,
     deferral_updates,
@@ -78,6 +81,8 @@ from app.modules.indexing.rate_limit_deferral import (
     plan_deferral,
     rate_limit_retry_after,
 )
+from app.modules.indexing.split_rollup import part_terminal
+from app.modules.indexing.split_state import is_part, prime_parts
 from app.modules.pipeline.parse_now import (
     ELIGIBLE_STATUSES as PARSE_NOW_ELIGIBLE_STATUSES,
 )
@@ -85,7 +90,7 @@ from app.modules.pipeline.parse_now import (
     is_folder_record,
     terminal_marker_status,
 )
-from app.modules.transformers.transformer import TransformContext
+from app.modules.transformers.transformer import SPLIT_PARENT_GEN, TransformContext
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.graph_db.common.record_visibility import (
     is_live_record,
@@ -904,6 +909,7 @@ class RecordEventHandler(BaseEventService):
         if record is None:
             self.logger.warning(f"Record {record_id} not found in database")
             return
+        await prime_parts([record], self.event_processor.graph_provider)
         indexing_status = record.get("indexingStatus")
         virtual_record_id = record.get("virtualRecordId")
         if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
@@ -929,7 +935,7 @@ class RecordEventHandler(BaseEventService):
                 # covers — the provider returns a count, not the ids.
                 await notify_record_indexed(
                     connector_name=record.get("connectorName"),
-                    connector_id=record.get("connectorId"),
+                    connector_id=owner_connector_id(record),
                     external_record_group_id=record.get("externalGroupId"),
                     org_id=record.get("orgId"),
                 )
@@ -1433,6 +1439,12 @@ class RecordEventHandler(BaseEventService):
         )
         return recreated
 
+    async def _is_split_parent(self, virtual_record_id: str | None, record: dict) -> bool:
+        runtime = getattr(self.event_processor, "split_runtime", None)
+        if runtime is None or not virtual_record_id or not is_pdf(record.get("extension"), record.get("mimeType")):
+            return False
+        return await runtime.reembed.row(virtual_record_id) is not None
+
     async def _index_from_blob(
         self,
         record_id: str,
@@ -1519,6 +1531,16 @@ class RecordEventHandler(BaseEventService):
                 yield event
             return
 
+        # A split file keeps only its manifest under the parent's own id; its pages are in parts, each re-embedded
+        # by an event of its own. None of these deletes by the file's id: that would remove every part's points.
+        runtime = getattr(self.event_processor, "split_runtime", None)
+        is_a_part = is_part(record)
+        split_row = None
+        if is_a_part:
+            await prime_parts([record], self.event_processor.graph_provider)
+        elif runtime is not None and is_pdf(record.get("extension"), record.get("mimeType")):
+            split_row = await runtime.reembed.row(virtual_record_id)
+
         # Everything that can fail deterministically happens before the delete.
         # _blob_has_blocks only checks the container is non-empty, so a malformed
         # block still raises here — and a validation error classifies TERMINAL,
@@ -1537,7 +1559,7 @@ class RecordEventHandler(BaseEventService):
                 )
             ctx = TransformContext(
                 record=record_obj,
-                settings={"skip_blob": True},
+                settings={"skip_blob": True, **({SPLIT_PARENT_GEN: split_row.gen} if split_row else {})},
                 event_type=event_type,
             )
         except Exception:
@@ -1555,16 +1577,20 @@ class RecordEventHandler(BaseEventService):
         # leave the old points in place and the upsert below would duplicate them.
         # Scoped to this record's own collection — the same VRID can be indexed
         # from another connector, and re-embedding one must not wipe the other.
-        await self.event_processor.processor.indexing_pipeline.delete_points_for_virtual_record(
-            virtual_record_id,
-            RecordContext.from_record(record_obj, record_obj.org_id),
-        )
+        if not is_a_part and split_row is None:
+            await self.event_processor.processor.indexing_pipeline.delete_points_for_virtual_record(
+                virtual_record_id,
+                RecordContext.from_record(record_obj, record_obj.org_id),
+            )
 
         try:
             await sink.index(ctx)
-            # The stored extraction rebuilds the record's named entities and their
-            # vector points too, so a re-embed never drops them or calls a model.
-            await sink.reproject_named_entities(ctx, content_rev=record.get("contentRev"))
+            if not is_a_part:
+                # The stored extraction rebuilds the record's named entities and their
+                # vector points too, so a re-embed never drops them or calls a model.
+                await sink.reproject_named_entities(ctx, content_rev=record.get("contentRev"))
+            if split_row is not None:
+                await runtime.reembed.queue_parts(split_row, str(record.get("connectorId") or ""))
         except Exception:
             self.logger.exception(
                 "Vector-only reindex failed for record %s", record_id
@@ -1648,9 +1674,10 @@ class RecordEventHandler(BaseEventService):
                     )
                 self.logger.info(f"🗑️ Deleting embeddings for connector {connector_id}")
                 indexing_pipeline = self.event_processor.processor.indexing_pipeline
+                event_org = payload.get("orgId", "")
                 result = await indexing_pipeline.purge_connector(
                     DeleteContext(
-                        org_id=payload.get("orgId", ""),
+                        org_id=event_org,
                         connector_id=connector_id,
                         connector_name=payload.get("connectorName"),
                     ),
@@ -1672,6 +1699,12 @@ class RecordEventHandler(BaseEventService):
                         "Connector embedding cleanup did not complete",
                         details={"result": result},
                     )
+                # Parts belong to the content, not to the connector that first split it: a file another connector
+                # still holds keeps its parts and they answer to that connector from now on.
+                split_runtime = getattr(self.event_processor, "split_runtime", None)
+                if split_runtime is not None and event_org:
+                    with for_org(event_org, job="split_rehome"):
+                        await split_runtime.sweep.rehome_owned_by(event_org, connector_id)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="connector_purge", count=0))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="connector_purge", count=0))
                 return
@@ -1884,6 +1917,8 @@ class RecordEventHandler(BaseEventService):
                 )
                 return
 
+            # A part answers to its parent's connector, read from its part document.
+            await prime_parts([record], self.event_processor.graph_provider)
             if not is_live_record(record):
                 # Same as not found: indexing a record in the trash would put
                 # back the vectors its delete removed. Cleared so the finally
@@ -1955,6 +1990,12 @@ class RecordEventHandler(BaseEventService):
                     )
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    return
+                if payload.get("firstUse") and await self._is_split_parent(virtual_record_id, record):
+                    # Its summary and entities come from its parts, once they have all finished.
+                    self.logger.info(f"Not classifying split file {record_id} on first use: its parts' roll-up does")
+                    for done in (IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE):
+                        yield PipelineEvent(event=done, data=PipelineEventData(record_id=record_id))
                     return
                 dispatched = await stage_ingress.redrive(
                     virtual_record_id,
@@ -2562,7 +2603,7 @@ class RecordEventHandler(BaseEventService):
                         virtual_record_id = record.get("virtualRecordId")
                         
                         # Decide duplicate handling based on error type
-                        if (last_exception and 
+                        if (last_exception and
                             MessageErrorClassifier.classify_by_exception(last_exception)
                             == MessageErrorType.TERMINAL):
                             # Terminal error → content issue → fail ALL duplicates
@@ -2701,6 +2742,7 @@ class RecordEventHandler(BaseEventService):
                 )
                 return None
             self.logger.debug(f"✅ Updated document status for record {record_id}")
+            await part_terminal(record, indexing_status)
             return record
         except Exception as e:
             self.logger.error(f"❌ Failed to update document status: {str(e)}")

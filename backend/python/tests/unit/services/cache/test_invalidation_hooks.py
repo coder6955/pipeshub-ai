@@ -256,3 +256,42 @@ class TestDeleteRecordResultShape:
         assert result["connectorId"] == "conn-1"
         assert result["orgId"] == "org-1"
         assert result["isKb"] is False
+
+
+class TestSplitFileCompletionSite:
+    async def test_a_part_completing_does_not_notify_and_the_files_roll_up_does(self) -> None:
+        from app.modules.indexing.split_wiring import notify_file_searchable
+
+        orchestrator = SinkOrchestrator.__new__(SinkOrchestrator)
+        orchestrator.logger = MagicMock()
+        orchestrator.config_service = None
+        orchestrator.graph_provider = MagicMock()
+        orchestrator.graph_provider.batch_update_nodes = AsyncMock(return_value=True)
+        part = MagicMock()
+        part.id = "part-1"
+        part.connector_id = "pdfparts_org-1"
+        part.org_id = "org-1"
+        ctx = MagicMock()
+        ctx.record = part
+        ctx.settings = {}
+        notify = AsyncMock()
+        with patch("app.modules.transformers.sink_orchestrator.notify_record_indexed", new=notify), patch(
+            "app.modules.transformers.sink_orchestrator.prime_parts", AsyncMock()
+        ), patch("app.modules.transformers.sink_orchestrator.record_block_count", AsyncMock()), patch(
+            "app.modules.transformers.sink_orchestrator.part_terminal", AsyncMock()
+        ):
+            await orchestrator._update_indexing_status(ctx)
+        notify.assert_not_awaited()
+
+        graph = MagicMock()
+        graph.get_nodes_by_field_in = AsyncMock(return_value=[{
+            "connectorName": "DRIVE", "connectorId": "drive-1", "externalRecordGroupId": "g-1", "orgId": "org-1",
+        }])
+        row = MagicMock()
+        row.v = "vr-file"
+        row.org_id = "org-1"
+        with patch("app.modules.indexing.split_wiring.notify_record_indexed", new=notify):
+            await notify_file_searchable(graph)(row)
+        notify.assert_awaited_once_with(
+            connector_name="DRIVE", connector_id="drive-1", external_record_group_id="g-1", org_id="org-1",
+        )

@@ -4802,7 +4802,7 @@ class DataSourceEntitiesProcessor:
         stage_rev: str | None = None,
         selected: bool = False,
     ) -> dict:
-        payload = {**record.to_kafka_record(), "forceReindex": True}
+        payload = {**record.to_kafka_record(), "forceReindex": True, "forceReindexAt": get_epoch_timestamp_in_ms()}
         if record.virtual_record_id:
             payload.setdefault("virtualRecordId", record.virtual_record_id)
         if vector_db_only:

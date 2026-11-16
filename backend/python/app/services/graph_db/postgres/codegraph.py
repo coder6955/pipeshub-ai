@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
 _LINKS = CollectionNames.NODE_RELATIONS.value
 _STAGES = CollectionNames.STAGE_STATES.value
+_SPLITS = CollectionNames.CONTENT_SPLITS.value
 _BLOCKS = CollectionNames.BLOCKS.value
 _POINTERS = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
 _LINK_ENDS = ("records", _BLOCKS)  # a code link ends on a record (whole file) or a block (symbol)
@@ -825,6 +826,25 @@ class CodeGraphMixin(PgBase):
                 out += [{**_doc(r["doc"]), "orgId": org} for r in rows]    # the row's org, not the document's own claim
         self._raise_failed(errors)
         return sorted(out, key=lambda d: d.get("updatedAtMs") or 0)[:limit]
+
+    async def content_splits_page(self, states: list[str], *, updated_before_ms: int | None = None, after_key: str | None = None,
+                                  limit: int = 100, org_id: str | None = None) -> list[dict[str, Any]]:
+        current_or_system()
+        out: list[dict[str, Any]] = []
+        errors: list[tuple[str, Exception]] = []
+        for each_org in await self._sweep_orgs():
+            if org_id is not None and each_org is not None and each_org != org_id:
+                continue
+            with self._sweep(each_org, errors):
+                org = current_org_id()
+                if org_id is not None and org != org_id:
+                    continue
+                rows = await self._q(lambda tx, org=org: tx.fetch("""/* pipeshub:graph.content_splits_page */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = $2
+                    AND doc->>'state' = ANY($3::text[]) AND ($4::bigint IS NULL OR (doc->'updatedAtMs') < to_jsonb($4::bigint)) AND ($5::text IS NULL OR id > $5)
+                    ORDER BY id LIMIT $6""", org, _SPLITS, states, updated_before_ms, after_key, limit), None)
+                out += [{**_arango({**_doc(r["doc"]), "id": r["id"]}, _SPLITS), "orgId": org} for r in rows]    # the row's org, not the document's own claim
+        self._raise_failed(errors)
+        return sorted(out, key=lambda d: d["_key"])[:limit]
 
     async def stage_states_delete_for_virtual_records(self, virtual_record_ids: list[str]) -> int:
         org = current_org_id()

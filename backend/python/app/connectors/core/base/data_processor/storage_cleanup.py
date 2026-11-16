@@ -516,6 +516,7 @@ class StorageCleanupHelper:
             )
         payload = await self.graph_provider._create_reindex_event_payload(record, file_record)
         payload["forceReindex"] = True
+        payload["forceReindexAt"] = get_epoch_timestamp_in_ms()
         sent = await publish(
             Topic.RECORD_EVENTS.value,
             {

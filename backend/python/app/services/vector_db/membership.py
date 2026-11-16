@@ -1031,6 +1031,37 @@ async def rewrite_or_delete_virtual_record(
             )
 
 
+async def require_indexed_filter(vector_db, collection_name: str, flt) -> None:  # noqa: ANN001
+    """Refuse a delete scoped to a segment of a split file when the store cannot filter on every field of the filter.
+
+    A store that drops a condition it has no index for would widen the delete to the whole file, or to every segment: that is
+    never what a scoped delete means, so it raises instead (the points stay, the caller's attempt fails and is retried)."""
+    missing = await vector_db.unindexed_filter_fields(collection_name, flt)
+    if isinstance(missing, (list, tuple)) and missing:
+        from app.exceptions.indexing_exceptions import VectorStoreError
+
+        raise VectorStoreError(
+            f"a delete scoped to a segment of a split file cannot run on '{collection_name}': the store's index does not hold "
+            f"{', '.join(missing)}, so the filter would match more than the segment",
+            details={"collection": collection_name, "unindexed_fields": list(missing)},
+        )
+
+
+async def delete_segment_points(
+    vector_db, collections: Sequence[str], org_id: str, root_vrid: str, segment_vrid: str,  # noqa: ANN001
+) -> None:
+    """Delete the points one segment of a split file owns: the points carry the file's virtual record id as their
+    own and the part's as their segment, so a delete by the part's id alone matches nothing."""
+    if not (org_id and root_vrid and segment_vrid):
+        raise ValueError("a segment's points are deleted by organisation, file and segment")
+    filt = await vector_db.filter_collection(
+        must={"orgId": org_id, "virtualRecordId": root_vrid, "segmentVirtualRecordId": segment_vrid}
+    )
+    for collection_name in collections:
+        await require_indexed_filter(vector_db, collection_name, filt)
+        await vector_db.delete_points(collection_name=collection_name, filter=filt)
+
+
 # VRIDs whose mapping row was kept for another org, so the warning comes once per process, not every sweep lap.
 _shared_row_kept: set[str] = set()
 

@@ -322,6 +322,17 @@ services:
       - PIPESHUB_CPU_OVERSUB=${PIPESHUB_CPU_OVERSUB:-}
       - RECORD_PROCESSING_TIMEOUT=${RECORD_PROCESSING_TIMEOUT:-}
       - PDF_RECORD_PROCESSING_TIMEOUT=${PDF_RECORD_PROCESSING_TIMEOUT:-}
+      # Large PDFs: a PDF with more pages than PDF_SPLIT_MIN_PAGES is indexed as parts (docs/indexing-service.md 4.15).
+      # PART_PAGES and MAX_PART_BYTES derive from the OCR page cap and the heavy-file size when empty.
+      - PDF_SPLIT_ENABLED=${PDF_SPLIT_ENABLED:-true}
+      - PDF_SPLIT_MIN_PAGES=${PDF_SPLIT_MIN_PAGES:-500}
+      - PDF_SPLIT_PART_PAGES=${PDF_SPLIT_PART_PAGES:-}
+      - PDF_SPLIT_MAX_PART_BYTES=${PDF_SPLIT_MAX_PART_BYTES:-}
+      - PDF_SPLIT_OVERLAP_PAGES=${PDF_SPLIT_OVERLAP_PAGES:-1}
+      - PDF_SPLIT_TIMEOUT_SECONDS=${PDF_SPLIT_TIMEOUT_SECONDS:-1800}
+      # Before a downgrade: PDF_SPLIT_ENABLED=false, PDF_SPLIT_ROLLBACK=dry-run, then apply (optionally one organisation).
+      - PDF_SPLIT_ROLLBACK=${PDF_SPLIT_ROLLBACK:-}
+      - PDF_SPLIT_ROLLBACK_ORG=${PDF_SPLIT_ROLLBACK_ORG:-}
       - QUERY_UVICORN_WORKERS=${QUERY_UVICORN_WORKERS:-}
       # Query-service runtime tuning. Defaults reproduce current behaviour:
       # langchain transport, accessible-records cache on, signed-URL cache off.

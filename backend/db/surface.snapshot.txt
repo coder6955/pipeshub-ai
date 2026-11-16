@@ -1558,6 +1558,11 @@ index graph.nodes_app_by_id on graph.nodes unique=false exclusion=false valid=tr
 index graph.nodes_block_name on graph.nodes unique=false exclusion=false valid=true def=49619dfd1628d521678017dab7b7b6fa
 index graph.nodes_block_record on graph.nodes unique=false exclusion=false valid=true def=49c4a104b5d1bd103fe19163130fe052
 index graph.nodes_codefile_path on graph.nodes unique=false exclusion=false valid=true def=a0ca69de02117c30b4a5b6c5f666ed6e
+index graph.nodes_content_split_part_owner on graph.nodes unique=false exclusion=false valid=true def=b7bb671239a83bad38905570bbf28f70
+index graph.nodes_content_split_part_root on graph.nodes unique=false exclusion=false valid=true def=a347a3497eb5479e3b3fa1a39a981168
+index graph.nodes_content_split_part_root_gen on graph.nodes unique=false exclusion=false valid=true def=3d59bac29593501c75d77b4f3a4ca56c
+index graph.nodes_content_split_part_vrid on graph.nodes unique=false exclusion=false valid=true def=b6388e6f2df31023f9b5fc0b4d25bf17
+index graph.nodes_content_split_state on graph.nodes unique=false exclusion=false valid=true def=cb2771d6d57a78c1c1fed0aad6416c1f
 index graph.nodes_file_path on graph.nodes unique=false exclusion=false valid=true def=73d839b6dcd5439ecd9a5b192b6e5325
 index graph.nodes_group_by_external on graph.nodes unique=false exclusion=false valid=true def=b8bd5c14dc0ab6ce8b252f15de2cf812
 index graph.nodes_group_email on graph.nodes unique=false exclusion=false valid=true def=2cb5691aa86567072a8f53cc8229f0fb

@@ -1,0 +1,1133 @@
+{
+ "agent_schema": {
+  "properties": [
+   "apiToolsetTools",
+   "createdAtTimestamp",
+   "createdBy",
+   "defaultReasoningEffort",
+   "deletedAtTimestamp",
+   "deletedByUserId",
+   "description",
+   "instructions",
+   "isActive",
+   "isDeleted",
+   "isServiceAccount",
+   "models",
+   "name",
+   "sendUserContext",
+   "serviceAccountUserId",
+   "startMessage",
+   "systemPrompt",
+   "tags",
+   "updatedAtTimestamp",
+   "updatedBy",
+   "webSearch"
+  ],
+  "required": [
+   "createdAtTimestamp",
+   "createdBy",
+   "description",
+   "models",
+   "name",
+   "startMessage",
+   "systemPrompt"
+  ]
+ },
+ "agent_skill_candidates_schema": {
+  "properties": [
+   "_key",
+   "body",
+   "candidateId",
+   "category",
+   "createdAtTimestamp",
+   "description",
+   "name",
+   "orgId",
+   "sourceTrajectorySummary",
+   "status",
+   "subcategory",
+   "tags"
+  ],
+  "required": [
+   "body",
+   "candidateId",
+   "createdAtTimestamp",
+   "description",
+   "name",
+   "orgId"
+  ]
+ },
+ "agent_skill_versions_schema": {
+  "properties": [
+   "_key",
+   "content",
+   "createdAtTimestamp",
+   "name",
+   "orgId",
+   "resourceContents",
+   "resourcePaths",
+   "resources",
+   "skillKey",
+   "summary",
+   "updatedBy",
+   "version"
+  ],
+  "required": [
+   "content",
+   "createdAtTimestamp",
+   "name",
+   "orgId",
+   "skillKey",
+   "version"
+  ]
+ },
+ "agent_skills_schema": {
+  "properties": [
+   "_key",
+   "auditActions",
+   "auditActorIds",
+   "auditLog",
+   "auditReasons",
+   "auditTimestamps",
+   "category",
+   "concepts",
+   "content",
+   "createdAtTimestamp",
+   "createdBy",
+   "deprecatedReason",
+   "description",
+   "name",
+   "orgId",
+   "packName",
+   "packVersion",
+   "related",
+   "replacedBy",
+   "requires",
+   "resourceContents",
+   "resourcePaths",
+   "resources",
+   "source",
+   "status",
+   "subcategory",
+   "tags",
+   "updatedAtTimestamp",
+   "updatedBy",
+   "usageFailedOutcomes",
+   "usageFailureModes",
+   "usageImprovementNotes",
+   "usageLastActivated",
+   "usageSuccessfulOutcomes",
+   "usageTotalActivations",
+   "version"
+  ],
+  "required": [
+   "content",
+   "createdAtTimestamp",
+   "createdBy",
+   "description",
+   "name",
+   "orgId",
+   "status"
+  ]
+ },
+ "agent_template_schema": {
+  "properties": [
+   "createdAtTimestamp",
+   "createdBy",
+   "deletedAtTimestamp",
+   "deletedByUserId",
+   "description",
+   "isActive",
+   "isDeleted",
+   "memory",
+   "models",
+   "name",
+   "orgId",
+   "startMessage",
+   "systemPrompt",
+   "tags",
+   "tools",
+   "updatedAtTimestamp",
+   "updatedByUserId"
+  ],
+  "required": [
+   "description",
+   "name",
+   "startMessage",
+   "systemPrompt"
+  ]
+ },
+ "app_role_schema": {
+  "properties": [
+   "connectorId",
+   "connectorName",
+   "createdAtTimestamp",
+   "deletedAtSourceTimestamp",
+   "description",
+   "externalRoleId",
+   "isDeletedAtSource",
+   "lastSyncTimestamp",
+   "name",
+   "orgId",
+   "parentRoleId",
+   "sourceCreatedAtTimestamp",
+   "sourceLastModifiedTimestamp",
+   "updatedAtTimestamp"
+  ],
+  "required": [
+   "connectorId",
+   "connectorName",
+   "createdAtTimestamp",
+   "externalRoleId",
+   "name"
+  ]
+ },
+ "app_schema": {
+  "properties": [
+   "_key",
+   "actionItems",
+   "appGroup",
+   "authType",
+   "authenticatedBy",
+   "createdAtTimestamp",
+   "createdBy",
+   "description",
+   "enabledAtTimestamp",
+   "entityIndexAfterKey",
+   "entityIndexAttempts",
+   "entityIndexErrors",
+   "entityIndexExhausted",
+   "entityIndexFailures",
+   "entityIndexPhase",
+   "entityIndexState",
+   "entityIndexTarget",
+   "hideConnector",
+   "initiatedBy",
+   "isActive",
+   "isAgentActive",
+   "isAuthenticated",
+   "isConfigured",
+   "isHidden",
+   "isLocked",
+   "lastSyncFinishedAtTimestamp",
+   "lastSyncOutcome",
+   "lastSyncStartedAtTimestamp",
+   "lastSyncSummary",
+   "lastSyncedBy",
+   "name",
+   "orgId",
+   "ownerDeviceId",
+   "ownerDeviceName",
+   "pendingFullSync",
+   "pendingResync",
+   "permissionModel",
+   "queuedAtTimestamp",
+   "recordLabelRepairAfterKey",
+   "recordLabelRepairAttempts",
+   "recordLabelRepairExhausted",
+   "recordLabelRepairFailures",
+   "recordLabelRepairMissing",
+   "recordLabelRepairRepaired",
+   "recordLabelRepairSkipped",
+   "recordLabelRepairState",
+   "rootMembershipRequested",
+   "scope",
+   "scopeBackfillAfter",
+   "scopeBackfillError",
+   "scopeBackfillExact",
+   "scopeBackfillGeneration",
+   "scopeBackfillLegacy",
+   "scopeBackfillRecords",
+   "scopeBackfillStale",
+   "scopeBackfillState",
+   "scopeBackfillStructureGeneration",
+   "scopeBackfillUnsafe",
+   "scopeBackfillVersion",
+   "scopeProjectionClosed",
+   "scopeProjectionGeneration",
+   "scopeProjectionOpenWrites",
+   "scopeProjectionOpened",
+   "scopeProjectionPendingRoots",
+   "scopeProjectionUnsafe",
+   "scopeRewriteLease",
+   "scopeSweepState",
+   "status",
+   "storedContentHealAfterKey",
+   "storedContentHealAttempts",
+   "storedContentHealChecked",
+   "storedContentHealExhausted",
+   "storedContentHealFailures",
+   "storedContentHealHealed",
+   "storedContentHealMissing",
+   "storedContentHealOrphaned",
+   "storedContentHealState",
+   "toggleSeq",
+   "type",
+   "updatedAtTimestamp",
+   "updatedBy",
+   "vectorMembershipBackfillAfterKey",
+   "vectorMembershipBackfillAttempts",
+   "vectorMembershipBackfillExhausted",
+   "vectorMembershipBackfillFailures",
+   "vectorMembershipBackfillVrids",
+   "vectorMembershipBackfilled"
+  ],
+  "required": [
+   "appGroup",
+   "createdAtTimestamp",
+   "isActive",
+   "name",
+   "scope",
+   "type"
+  ]
+ },
+ "artifact_record_schema": {
+  "properties": [
+   "artifactType",
+   "contentHash",
+   "conversationId",
+   "description",
+   "expiresAt",
+   "extension",
+   "isTemporary",
+   "lifecycleStatus",
+   "logicalName",
+   "mimeType",
+   "name",
+   "orgId",
+   "resultSchema",
+   "sizeInBytes",
+   "sourceTool",
+   "versions",
+   "visibility"
+  ],
+  "required": [
+   "name",
+   "orgId"
+  ]
+ },
+ "block_schema": {
+  "properties": [
+   "connectorId",
+   "contentHash",
+   "createdAtTimestamp",
+   "endLine",
+   "externalRefs",
+   "filePath",
+   "index",
+   "isAccessor",
+   "isBlockGroup",
+   "isExternal",
+   "kind",
+   "language",
+   "macroTable",
+   "modifiers",
+   "name",
+   "nameFolded",
+   "orgId",
+   "parentBlockId",
+   "parserVersion",
+   "pendingEdges",
+   "qualifiedName",
+   "recordGroupId",
+   "recordId",
+   "referencedNames",
+   "startLine",
+   "subType",
+   "typeParamCount",
+   "typeTable",
+   "updatedAtTimestamp"
+  ],
+  "required": [
+   "orgId",
+   "recordId"
+  ]
+ },
+ "code_file_record_schema": {
+  "properties": [
+   "changedNames",
+   "changedNamesAt",
+   "commitSha",
+   "description",
+   "fileHash",
+   "filePath",
+   "fileRole",
+   "language",
+   "orgId",
+   "referencedNames",
+   "summary"
+  ],
+  "required": []
+ },
+ "comment_record_schema": {
+  "properties": [
+   "authorSourceId",
+   "commentSelection",
+   "resolutionStatus"
+  ],
+  "required": []
+ },
+ "deal_record_schema": {
+  "properties": [
+   "amount",
+   "closeDate",
+   "conversionProbability",
+   "createdDate",
+   "expectedCloseDate",
+   "expectedRevenue",
+   "isClosed",
+   "isWon",
+   "name",
+   "orgId",
+   "ownerId",
+   "type"
+  ],
+  "required": []
+ },
+ "department_schema": {
+  "properties": [
+   "departmentName",
+   "orgId"
+  ],
+  "required": [
+   "departmentName"
+  ]
+ },
+ "drive_record_schema": {
+  "properties": [
+   "isFile",
+   "name"
+  ],
+  "required": []
+ },
+ "file_record_schema": {
+  "properties": [
+   "crc32Hash",
+   "ctag",
+   "etag",
+   "extension",
+   "isFile",
+   "localFsRelativePath",
+   "md5Checksum",
+   "mimeType",
+   "name",
+   "orgId",
+   "path",
+   "quickXorHash",
+   "sha1Hash",
+   "sha256Hash",
+   "sizeInBytes",
+   "webUrl"
+  ],
+  "required": [
+   "name"
+  ]
+ },
+ "knowledge_schema": {
+  "properties": [
+   "_key",
+   "connectorId",
+   "createdAtTimestamp",
+   "createdBy",
+   "filters",
+   "updatedAtTimestamp",
+   "updatedBy"
+  ],
+  "required": [
+   "connectorId",
+   "createdAtTimestamp",
+   "createdBy",
+   "filters"
+  ]
+ },
+ "link_record_schema": {
+  "properties": [
+   "isPublic",
+   "linkedRecordId",
+   "orgId",
+   "title",
+   "url"
+  ],
+  "required": [
+   "isPublic",
+   "orgId",
+   "url"
+  ]
+ },
+ "mail_record_schema": {
+  "properties": [
+   "bcc",
+   "cc",
+   "conversationIndex",
+   "date",
+   "from",
+   "historyId",
+   "internalDate",
+   "isParent",
+   "labelIds",
+   "messageIdHeader",
+   "subject",
+   "threadId",
+   "to",
+   "webUrl"
+  ],
+  "required": [
+   "isParent",
+   "threadId"
+  ]
+ },
+ "mcp_server_schema": {
+  "properties": [
+   "_key",
+   "allTools",
+   "createdAtTimestamp",
+   "createdBy",
+   "displayName",
+   "instanceId",
+   "name",
+   "typeId",
+   "updatedAtTimestamp",
+   "userId"
+  ],
+  "required": [
+   "createdAtTimestamp",
+   "createdBy",
+   "displayName",
+   "instanceId",
+   "name",
+   "userId"
+  ]
+ },
+ "meeting_record_schema": {
+  "properties": [
+   "durationMinutes",
+   "endTime",
+   "hostEmail",
+   "hostId",
+   "meetingType",
+   "recordingUrl",
+   "startTime",
+   "timezone"
+  ],
+  "required": []
+ },
+ "message_record_schema": {
+  "properties": [
+   "authorEmail",
+   "authorId",
+   "endTs",
+   "hasReplies",
+   "isEdited",
+   "isReply",
+   "orgId",
+   "startTs",
+   "threadId"
+  ],
+  "required": [
+   "orgId"
+  ]
+ },
+ "named_entity_persist_retry_schema": {
+  "properties": [
+   "attempts",
+   "createdAtTimestamp",
+   "dueAt",
+   "lastError",
+   "orgId",
+   "recordId",
+   "reextract",
+   "updatedAtTimestamp"
+  ],
+  "required": [
+   "attempts",
+   "dueAt",
+   "orgId",
+   "recordId"
+  ]
+ },
+ "named_entity_schema": {
+  "properties": [
+   "aliases",
+   "amount",
+   "amountFloat",
+   "amountHighFloat",
+   "category",
+   "createdAtTimestamp",
+   "currency",
+   "dimension",
+   "durationIso",
+   "durationSeconds",
+   "endMs",
+   "granularity",
+   "keyScheme",
+   "kind",
+   "mergedAt",
+   "mergedInto",
+   "name",
+   "normKey",
+   "normalizedAliases",
+   "numericValue",
+   "orgId",
+   "orphanedAt",
+   "schemaVersion",
+   "siValue",
+   "startMs",
+   "tags",
+   "timex",
+   "types",
+   "unit",
+   "updatedAtTimestamp"
+  ],
+  "required": [
+   "kind",
+   "name",
+   "normKey",
+   "orgId"
+  ]
+ },
+ "orgs_schema": {
+  "properties": [
+   "_key",
+   "accountType",
+   "createdAtTimestamp",
+   "dunsId",
+   "entityIndexAfterKey",
+   "entityIndexAttempts",
+   "entityIndexErrors",
+   "entityIndexExhausted",
+   "entityIndexFailures",
+   "entityIndexPhase",
+   "entityIndexState",
+   "entityIndexSweepFailures",
+   "entityIndexSweepOffset",
+   "entityIndexSweptAt",
+   "entityIndexTarget",
+   "industry",
+   "isActive",
+   "isExternal",
+   "name",
+   "normalizedName",
+   "ownershipType",
+   "parentOrgId",
+   "phone",
+   "sourceCreatedAtTimestamp",
+   "sourceLastModifiedTimestamp",
+   "updatedAtTimestamp",
+   "website"
+  ],
+  "required": [
+   "accountType",
+   "isActive"
+  ]
+ },
+ "people_schema": {
+  "properties": [
+   "_key",
+   "createdAtTimestamp",
+   "email",
+   "firstName",
+   "fullName",
+   "lastName",
+   "orgId",
+   "phone",
+   "sourceKey",
+   "updatedAtTimestamp"
+  ],
+  "required": [
+   "createdAtTimestamp",
+   "updatedAtTimestamp"
+  ]
+ },
+ "product_record_schema": {
+  "properties": [
+   "isActive",
+   "listPrice",
+   "orgId",
+   "productCode",
+   "productFamily",
+   "sku"
+  ],
+  "required": []
+ },
+ "project_record_schema": {
+  "properties": [
+   "leadEmail",
+   "leadId",
+   "leadName",
+   "orgId",
+   "priority",
+   "status"
+  ],
+  "required": []
+ },
+ "pull_request_record_schema": {
+  "properties": [
+   "assignee",
+   "assigneeEmail",
+   "closedAtTimestamp",
+   "creatorEmail",
+   "creatorName",
+   "description",
+   "labels",
+   "lastCommitSha",
+   "mergeable",
+   "mergedAtTimestamp",
+   "mergedBy",
+   "milestone",
+   "orgId",
+   "reviewEmail",
+   "reviewName",
+   "status",
+   "summary"
+  ],
+  "required": []
+ },
+ "record_group_schema": {
+  "properties": [
+   "accessRule",
+   "connectorId",
+   "connectorName",
+   "createdAtTimestamp",
+   "createdBy",
+   "deletedAtSourceTimestamp",
+   "deletedByUserId",
+   "description",
+   "externalGroupId",
+   "externalRevisionId",
+   "groupName",
+   "groupType",
+   "hideChildren",
+   "isDeletedAtSource",
+   "isInternal",
+   "lastSyncTimestamp",
+   "lastSyncedCommit",
+   "orgId",
+   "parentExternalGroupId",
+   "permissionModel",
+   "shortName",
+   "sourceCreatedAtTimestamp",
+   "sourceLastModifiedTimestamp",
+   "updatedAtTimestamp",
+   "webUrl"
+  ],
+  "required": [
+   "connectorName",
+   "createdAtTimestamp",
+   "groupName",
+   "groupType"
+  ]
+ },
+ "record_schema": {
+  "properties": [
+   "accessRule",
+   "connectorId",
+   "connectorName",
+   "contentRev",
+   "createdAtTimestamp",
+   "definition",
+   "deleteBatchId",
+   "deleteSource",
+   "deletedAtTimestamp",
+   "deletedByUserId",
+   "duplicateReconcileAttempts",
+   "duplicateReconcileDueAt",
+   "duplicateReconcilePending",
+   "embedDeliveryId",
+   "embedDigest",
+   "embedDone",
+   "embedKey",
+   "embedRev",
+   "embedSeconds",
+   "embedStartedMs",
+   "embedTotal",
+   "embedUncounted",
+   "embedVrid",
+   "entityExtractionStatus",
+   "entityExtractionStrategy",
+   "entityExtractorVersion",
+   "externalGroupId",
+   "externalParentId",
+   "externalRecordId",
+   "externalRevisionId",
+   "externalRootGroupId",
+   "extractionDeferred",
+   "extractionStatus",
+   "failedAt",
+   "firstQueuedAt",
+   "hasIndexedCopy",
+   "hideWeburl",
+   "indexingAttempts",
+   "indexingNote",
+   "indexingStatus",
+   "isArchived",
+   "isDeleted",
+   "isDependentNode",
+   "isDirty",
+   "isInternal",
+   "isLatestVersion",
+   "isPlaceholder",
+   "isShared",
+   "isVLMOcrProcessed",
+   "lastEntityExtractionTimestamp",
+   "lastExtractionTimestamp",
+   "lastIndexTimestamp",
+   "lastRepublishedAt",
+   "lastSyncTimestamp",
+   "md5Checksum",
+   "mimeType",
+   "orgId",
+   "origin",
+   "pageCount",
+   "parentNodeId",
+   "parseNowAt",
+   "parseNowReason",
+   "parseNowRev",
+   "parseNowStatus",
+   "parsingStatus",
+   "previewRenderable",
+   "processingStartedAt",
+   "propsGen",
+   "propsSet",
+   "propsSrc",
+   "propsVer",
+   "purgeAttempts",
+   "purgeLastError",
+   "pushOrigin",
+   "queuedAtTimestamp",
+   "rateLimitedSince",
+   "reason",
+   "recordGroupId",
+   "recordName",
+   "recordProps",
+   "recordType",
+   "republishCount",
+   "restoredAtTimestamp",
+   "retryNotBefore",
+   "rootRecordGroupId",
+   "rowCount",
+   "secretsRedacted",
+   "sizeInBytes",
+   "sourceCreatedAtTimestamp",
+   "sourceLastModifiedTimestamp",
+   "sourceTables",
+   "sourceTimestampOrigin",
+   "storageDocumentId",
+   "summaryDocumentId",
+   "trashedExternalRecordId",
+   "updatedAtTimestamp",
+   "uploadSourceCreatedAtTimestamp",
+   "uploadSourceLastModifiedTimestamp",
+   "uploadSourceTimestampOrigin",
+   "uploadedBy",
+   "version",
+   "virtualRecordId",
+   "webUrl"
+  ],
+  "required": [
+   "connectorId",
+   "createdAtTimestamp",
+   "externalRecordId",
+   "origin",
+   "recordName",
+   "recordType"
+  ]
+ },
+ "sql_column_record_schema": {
+  "properties": [
+   "cardinalityRatio",
+   "confidenceScore",
+   "dataType",
+   "default",
+   "distinctCount",
+   "fqn",
+   "isPartOfCompositePrimaryKey",
+   "isPartOfCompositeUnique",
+   "isPrimaryKey",
+   "isUnique",
+   "maxValue",
+   "minValue",
+   "name",
+   "nullCount",
+   "nullable",
+   "numericText",
+   "ordinalPosition",
+   "orgId",
+   "profiledAt",
+   "tableFqn",
+   "topValueFrequencies",
+   "topValues"
+  ],
+  "required": [
+   "fqn",
+   "name",
+   "tableFqn"
+  ]
+ },
+ "sql_table_record_schema": {
+  "properties": [
+   "columnCount",
+   "comment",
+   "databaseName",
+   "dbRowCount",
+   "ddl",
+   "foreignKeys",
+   "fqn",
+   "indexedRowCount",
+   "name",
+   "orgId",
+   "primaryKeys",
+   "rowCount",
+   "schemaName",
+   "sizeInBytes"
+  ],
+  "required": [
+   "name"
+  ]
+ },
+ "sql_view_record_schema": {
+  "properties": [
+   "comment",
+   "databaseName",
+   "ddl",
+   "definition",
+   "fqn",
+   "isSecure",
+   "name",
+   "orgId",
+   "schemaName",
+   "sourceTables"
+  ],
+  "required": [
+   "name"
+  ]
+ },
+ "stage_state_schema": {
+  "properties": [
+   "attempt",
+   "blocksDigest",
+   "connectorId",
+   "fingerprint",
+   "finishedAtMs",
+   "force",
+   "hasImages",
+   "hasTables",
+   "mimeType",
+   "orgId",
+   "output",
+   "priority",
+   "publishedAtMs",
+   "reason",
+   "recordIds",
+   "rev",
+   "stage",
+   "stageVersion",
+   "startedAtMs",
+   "status",
+   "textChars",
+   "textDigest",
+   "tier",
+   "trigger",
+   "updatedAtMs",
+   "virtualRecordId",
+   "workerId"
+  ],
+  "required": [
+   "blocksDigest",
+   "connectorId",
+   "hasImages",
+   "hasTables",
+   "orgId",
+   "priority",
+   "recordIds",
+   "rev",
+   "stage",
+   "stageVersion",
+   "status",
+   "textChars",
+   "textDigest",
+   "tier",
+   "trigger",
+   "updatedAtMs",
+   "virtualRecordId"
+  ]
+ },
+ "team_schema": {
+  "properties": [
+   "createdAtTimestamp",
+   "createdBy",
+   "deletedAtTimestamp",
+   "deletedByUserId",
+   "description",
+   "isDeleted",
+   "name",
+   "orgId",
+   "updatedAtTimestamp",
+   "updatedByUserId"
+  ],
+  "required": [
+   "name"
+  ]
+ },
+ "ticket_record_schema": {
+  "properties": [
+   "assignee",
+   "assigneeEmail",
+   "assigneeSourceTimestamp",
+   "assignee_source_id",
+   "creatorEmail",
+   "creatorName",
+   "creatorSourceTimestamp",
+   "deliveryStatus",
+   "dueDateTimestamp",
+   "is_email_hidden",
+   "labels",
+   "milestone",
+   "orgId",
+   "priority",
+   "reporterEmail",
+   "reporterName",
+   "reporterSourceTimestamp",
+   "reporter_source_id",
+   "resolvedAtTimestamp",
+   "sourceStatus",
+   "status",
+   "type"
+  ],
+  "required": []
+ },
+ "tool_schema": {
+  "properties": [
+   "_key",
+   "createdAtTimestamp",
+   "createdBy",
+   "description",
+   "fullName",
+   "name",
+   "toolsetName",
+   "updatedAtTimestamp"
+  ],
+  "required": [
+   "createdAtTimestamp",
+   "createdBy",
+   "fullName",
+   "name",
+   "toolsetName"
+  ]
+ },
+ "toolset_schema": {
+  "properties": [
+   "_key",
+   "createdAtTimestamp",
+   "createdBy",
+   "displayName",
+   "instanceId",
+   "instanceName",
+   "name",
+   "type",
+   "updatedAtTimestamp",
+   "userId"
+  ],
+  "required": [
+   "createdAtTimestamp",
+   "createdBy",
+   "displayName",
+   "name",
+   "type",
+   "userId"
+  ]
+ },
+ "user_group_schema": {
+  "properties": [
+   "connectorId",
+   "connectorName",
+   "createdAtTimestamp",
+   "deletedAtSourceTimestamp",
+   "description",
+   "externalGroupId",
+   "isDeletedAtSource",
+   "lastSyncTimestamp",
+   "mail",
+   "mailEnabled",
+   "name",
+   "orgId",
+   "sourceCreatedAtTimestamp",
+   "sourceLastModifiedTimestamp",
+   "updatedAtTimestamp"
+  ],
+  "required": [
+   "connectorName",
+   "createdAtTimestamp",
+   "externalGroupId",
+   "groupName"
+  ]
+ },
+ "user_schema": {
+  "properties": [
+   "_key",
+   "businessPhones",
+   "createdAtTimestamp",
+   "designation",
+   "email",
+   "firstName",
+   "fullName",
+   "isActive",
+   "isDisabled",
+   "kind",
+   "lastName",
+   "middleName",
+   "orgId",
+   "profileId",
+   "updatedAtTimestamp",
+   "userId"
+  ],
+  "required": [
+   "email"
+  ]
+ },
+ "value_mention_schema": {
+  "properties": [
+   "amount",
+   "amountFloat",
+   "amountHighFloat",
+   "blockIds",
+   "blockIndexes",
+   "createdAtTimestamp",
+   "currency",
+   "dimension",
+   "durationIso",
+   "durationSeconds",
+   "endMs",
+   "extractedNames",
+   "extractorVersion",
+   "extractors",
+   "granularity",
+   "kind",
+   "maxEvidence",
+   "mentionCount",
+   "name",
+   "normKey",
+   "numericValue",
+   "orgId",
+   "recordId",
+   "schemaVersion",
+   "siValue",
+   "startMs",
+   "timex",
+   "unit",
+   "updatedAtTimestamp"
+  ],
+  "required": [
+   "kind",
+   "normKey",
+   "orgId",
+   "recordId"
+  ]
+ },
+ "webpage_record_schema": {
+  "properties": [
+   "domain",
+   "orgId"
+  ],
+  "required": []
+ }
+}

@@ -25,8 +25,12 @@ from app.services.vector_db.membership import (
     MEMBERSHIP_WRITE_BATCH_SIZE,
     _other_orgs_hold_points,
     own_record_keys,
+    require_indexed_filter,
     vrid_write_locks,
     write_membership_batch_locked,
+)
+from app.services.vector_db.membership import (
+    delete_segment_points as _delete_segment_points,
 )
 from app.services.vector_db.membership import (
     orgs_holding_points as _orgs_holding_points,
@@ -181,6 +185,48 @@ class IndexingPipeline:
             "Deleted existing vector points for virtual_record_id %s in %s before re-embed",
             virtual_record_id,
             collection_name,
+        )
+
+    async def has_points_outside_segments(
+        self, ctx: RecordContext, org_id: str, virtual_record_id: str, segments: Sequence[str],
+    ) -> bool:
+        """Whether the file holds a point that belongs to none of *segments*: one bounded read for a point of the file
+        whose segment is not among them (a point with no segment at all included, which is what an unsplit write is).
+        An existence check, never a count of the file's points."""
+        collection = self.collection_registry.resolve_write_collection(ctx)
+        service = self.vector_db_service
+        outside = await service.filter_collection(
+            must={"orgId": org_id, "virtualRecordId": virtual_record_id},
+            must_not={"segmentVirtualRecordId": list(segments)},
+        )
+        page = await service.scroll(
+            collection_name=collection, scroll_filter=outside, limit=1, with_payload=["metadata.virtualRecordId"],
+        )
+        return bool(getattr(page, "points", None))
+
+    async def delete_points_outside_segments(
+        self, ctx: RecordContext, org_id: str, virtual_record_id: str, segments: Sequence[str],
+    ) -> None:
+        """Drop the points of the file that belong to none of *segments* (the whole-file points of an unsplit index, in
+        the collection this record writes to). The points of *segments* are never touched, so a second attempt that
+        joins a generation cannot remove what the first has indexed. Refused where the store cannot filter on the segment."""
+        if not (org_id and virtual_record_id and segments):
+            raise ValueError("points outside segments are deleted by organisation, file and the segments to keep")
+        collection = self.collection_registry.resolve_write_collection(ctx)
+        service = self.vector_db_service
+        outside = await service.filter_collection(
+            must={"orgId": org_id, "virtualRecordId": virtual_record_id},
+            must_not={"segmentVirtualRecordId": list(segments)},
+        )
+        await require_indexed_filter(service, collection, outside)
+        await service.delete_points(collection_name=collection, filter=outside)
+
+    async def delete_segment_points(self, org_id: str, root_virtual_record_id: str, segment_virtual_record_id: str) -> None:
+        """Drop the points of one part of a split file, in every collection of the organisation. Raises when the
+        collections cannot be listed, so a purge that could not delete is retried and never counted as done."""
+        collections = await self.collection_locator.all_collections(fresh=True, strict=True)
+        await _delete_segment_points(
+            self.vector_db_service, collections, org_id, root_virtual_record_id, segment_virtual_record_id,
         )
 
     async def rewrite_or_delete_vector_membership(self, virtual_record_id: str) -> str:

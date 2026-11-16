@@ -303,6 +303,8 @@ class CollectionNames(Enum):
     # Storage mappings
     VIRTUAL_RECORD_TO_DOC_ID_MAPPING = "virtualRecordToDocIdMapping"
     STAGE_STATES = "stageStates"
+    CONTENT_SPLITS = "contentSplits"
+    CONTENT_SPLIT_PARTS = "contentSplitParts"
     # Agent Builder collections
     AGENT_TEMPLATES = "agentTemplates"
     AGENT_INSTANCES = "agentInstances"

@@ -167,6 +167,7 @@ from app.core.org_context import current_org_id
 from app.core.signed_url import SIGNED_URL_PURPOSE, SignedUrlHandler
 from app.models.entities import ArtifactRecord, Record, RecordType
 from app.modules.demo_data.access import is_hidden_demo_record
+from app.modules.indexing.file_split_display import roll_up_stats, stamp_record
 from app.modules.pipeline.models import RETRYABLE_STAGES
 from app.modules.pipeline.state import stage_summaries
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
@@ -217,6 +218,8 @@ from app.utils.streaming import create_stream_record_response, start_streaming_r
 from app.utils.pdf_stream_conversion import libreoffice_to_pdf
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_lookup import get_org_or_503, get_user_or_503
+from app.modules.indexing.owner_connector import is_part_connector_id
+from app.modules.indexing.split_state import PartInfoMissing, part_info
 
 logger = create_logger("connector_service")
 
@@ -1348,6 +1351,45 @@ async def get_signed_url(
         logger.error(f"Error getting signed URL: {repr(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=action_failed("open this file")) from e
 
+async def _part_storage_document_id(graph_provider: IGraphDBProvider, record: Any) -> str | None:  # noqa: ANN401
+    """The storage document of a record that is a part of a split PDF, read from its graph node, else
+    None. A part has no connector to stream from. A record under the parts connector without a part
+    document is refused (fail closed)."""
+    if not is_part_connector_id(record.connector_id):
+        return None
+    try:
+        info = await part_info(record, graph_provider)
+    except PartInfoMissing as exc:
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record has no stored content yet") from exc
+    if info is None:
+        return None
+    doc = await graph_provider.get_document(record.id, CollectionNames.RECORDS.value, raise_on_error=True)
+    document_id = (doc or {}).get("storageDocumentId")
+    if not document_id:
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record has no stored content yet")
+    return str(document_id)
+
+
+async def _stream_storage_document(
+    config_service: ConfigurationService, org_id: str, document_id: str, record: Any, mime_type: str,  # noqa: ANN401
+) -> Response:
+    endpoints = await config_service.get_config(config_node_constants.ENDPOINTS.value)
+    storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+    buffer_url = f"{storage_url}/api/v1/document/internal/{document_id}/buffer"
+    token = await generate_jwt(config_service, {"orgId": org_id, "scopes": ["storage:token"]})
+    try:
+        response = await make_api_call(route=buffer_url, token=token)
+    except Exception as e:
+        logger.error("Failed to fetch stored buffer for record %s: %s", record.id, str(e), exc_info=True)
+        raise to_internal_service_error(e) from e
+    if isinstance(response["data"], dict):
+        data = response["data"].get("data")
+        buffer = bytes(data) if isinstance(data, list) else data
+    else:
+        buffer = response["data"]
+    return Response(content=buffer or b"", media_type=mime_type)
+
+
 @router.get("/api/v1/internal/stream/record/{record_id}/", response_model=None)
 @inject
 async def stream_record_internal(
@@ -1397,34 +1439,16 @@ async def stream_record_internal(
 
         connector_name = record.connector_name.value.lower().replace(" ", "")
         container: ConnectorAppContainer = request.app.container
-        if connector_name == Connectors.KNOWLEDGE_BASE.value.lower() or connector_name is None:
-            endpoints = await config_service.get_config(
-                config_node_constants.ENDPOINTS.value
+        part_storage_id = await _part_storage_document_id(graph_provider, record)
+        if part_storage_id is not None:
+            return await _stream_storage_document(
+                config_service, effective_org_id, part_storage_id, record, MimeTypes.PDF.value,
             )
-            storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
-            buffer_url = f"{storage_url}/api/v1/document/internal/{record.external_record_id}/buffer"
-            jwt_payload  = {
-                "orgId": effective_org_id,
-                "scopes": ["storage:token"],
-            }
-            token = await generate_jwt(config_service, jwt_payload)
-            try:
-                response = await make_api_call(route=buffer_url, token=token)
-            except Exception as e:
-                logger.error(
-                    "Failed to fetch KB buffer for record %s: %s",
-                    record.id, str(e), exc_info=True,
-                )
-                raise to_internal_service_error(e) from e
-            if isinstance(response["data"], dict):
-                data = response['data'].get('data')
-                buffer = bytes(data) if isinstance(data, list) else data
-            else:
-                buffer = response['data']
-
-            # Get the correct MIME type from the record
-            mime_type = get_mime_type_from_record(record)
-            return Response(content=buffer or b'', media_type=mime_type)
+        if connector_name == Connectors.KNOWLEDGE_BASE.value.lower() or connector_name is None:
+            return await _stream_storage_document(
+                config_service, effective_org_id, record.external_record_id, record,
+                get_mime_type_from_record(record),
+            )
 
         connector_id = record.connector_id
         connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
@@ -1929,6 +1953,7 @@ async def get_record_by_id(
             record: object = cast("dict[str, object]", has_access).get("record")
             if isinstance(record, dict):
                 has_access["record"] = api_record(record)
+                await stamp_record(has_access["record"], graph_provider, vrid=record.get("virtualRecordId"))
             has_access["stageStates"] = await _stage_states_of(graph_provider, record)
             return has_access
         else:
@@ -2791,7 +2816,8 @@ async def get_connector_stats_endpoint(
         # Fetch stats from graph provider
         result = await graph_provider.get_connector_stats(org_id, connector_id)
         if result["success"]:
-             return {"success": True, "data": result["data"]}
+            await roll_up_stats(result["data"], graph_provider, org_id, connector_id)
+            return {"success": True, "data": result["data"]}
         else:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"No data found for connector {connector_id}")
     except HTTPException:

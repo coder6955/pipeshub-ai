@@ -38,6 +38,8 @@ from app.services.vector_db.const.const import (
     PAYLOAD_KEYWORD_INDEXES,
     SCOPE_INTEGER_INDEXES,
     SCOPE_KEYWORD_INDEXES,
+    SEGMENT_VRID_FIELD,
+    SPLIT_GEN_FIELD,
 )
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import CollectionConfig
@@ -60,6 +62,8 @@ LivenessProbe = Callable[[DeleteContext, str], Awaitable[bool]]
 
 
 _FENCE_FIELDS = frozenset({CONTENT_REV_FIELD, EMBED_KEY_FIELD})
+# A split write deletes and resumes by these; without their indexes (Redis cannot filter an unindexed field) it must not run.
+_SPLIT_FIELDS = frozenset({SEGMENT_VRID_FIELD, SPLIT_GEN_FIELD})
 
 
 @dataclass(frozen=True)
@@ -142,6 +146,7 @@ class CollectionRegistry:
         # Collections whose resume-fence indexes could not be created. Resuming queries
         # those fields, so it is off for them until a later ensure succeeds.
         self._fence_missing: set[str] = set()
+        self._split_missing: set[str] = set()
 
     @property
     def strategy(self) -> CollectionStrategy:
@@ -276,8 +281,10 @@ class CollectionRegistry:
         """
         name = self.resolve_write_collection(ctx)
         if self._existence.matches_dimension(name, embedding_size):
-            if name in self._fence_missing:
-                await self._ensure_payload_indexes(name, only=_FENCE_FIELDS)
+            retry = (_FENCE_FIELDS if name in self._fence_missing else frozenset()) | (
+                _SPLIT_FIELDS if name in self._split_missing else frozenset())
+            if retry:
+                await self._ensure_payload_indexes(name, only=retry)
             return name
 
         existing_dim = await self._existing_dimension(name)
@@ -387,9 +394,13 @@ class CollectionRegistry:
         """False while the fields a resumed embedding run filters on are not known to be indexed."""
         return name not in self._fence_missing
 
+    def split_fence_ready(self, name: str) -> bool:
+        """False while the fields a split write filters on are not known to be indexed (or, on OpenSearch, mapped as keyword)."""
+        return name not in self._split_missing
+
     async def _ensure_payload_indexes(self, name: str, only: frozenset[str] | None = None) -> None:
         indexes = PAYLOAD_KEYWORD_INDEXES + ((*SCOPE_KEYWORD_INDEXES, *SCOPE_INTEGER_INDEXES) if scope_fields_enabled() else ())
-        fence_failed = False
+        fence_failed = split_failed = False
         for field_name, schema in indexes:
             if only is not None and field_name not in only:
                 continue
@@ -402,13 +413,14 @@ class CollectionRegistry:
                 if "already exists" in err or "already exist" in err or "conflict" in err or "duplicate field" in err:
                     continue
                 fence_failed = fence_failed or field_name in _FENCE_FIELDS
+                split_failed = split_failed or field_name in _SPLIT_FIELDS
                 self._logger.warning(
                     "Failed to create payload index %s on %s: %s", field_name, name, e
                 )
-        if fence_failed:
-            self._fence_missing.add(name)
-        else:
-            self._fence_missing.discard(name)
+        if only is None or only & _FENCE_FIELDS:
+            (self._fence_missing.add if fence_failed else self._fence_missing.discard)(name)
+        if only is None or only & _SPLIT_FIELDS:
+            (self._split_missing.add if split_failed else self._split_missing.discard)(name)
 
     async def reconcile_lexical_scoring(self) -> list[str]:
         """Bring every managed collection's keyword scoring up to date.

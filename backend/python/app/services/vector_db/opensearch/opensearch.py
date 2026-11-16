@@ -59,6 +59,7 @@ from opensearchpy.exceptions import NotFoundError
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.exceptions.indexing_exceptions import VectorStoreError
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.scope_fields import (
     SCOPE_FENCE_FIELD,
@@ -70,6 +71,8 @@ from app.services.vector_db.const.const import (
     RECORD_GROUP_IDS_FIELD,
     ROOT_RECORD_GROUP_IDS_FIELD,
     SCOPE_KEYWORD_INDEXES,
+    SEGMENT_VRID_FIELD,
+    SPLIT_GEN_FIELD,
 )
 from app.services.vector_db.errors import OrgRequired, PartialResult
 from app.services.vector_db.filters import (
@@ -158,6 +161,7 @@ _FENCED_MERGE_IF_ORG_SCRIPT = _MERGE_FN + (
 )
 # Bounded: a conflict means a concurrent writer; a few refreshed passes outlast it, more would hide a bug.
 _DELETE_CONFLICT_RETRIES = 5
+_SPLIT_KEYWORD_FIELDS = frozenset({SEGMENT_VRID_FIELD, SPLIT_GEN_FIELD})
 _ANY = "*"  # a written point that names no virtual record
 _UNREFRESHED_MAX = 10_000
 _DEFAULT_VISIBLE_AFTER_SECONDS = 35.0  # the 30 s refresh_interval the provider creates indexes with, and a margin
@@ -849,6 +853,23 @@ class OpenSearchService(IVectorDBService):
             mapping_body = {"properties": {field_name: {"type": os_type}}}
 
         await self.client.indices.put_mapping(index=collection_name, body=mapping_body)  # type: ignore
+        if field_name in _SPLIT_KEYWORD_FIELDS:
+            await self._require_keyword_mapping(collection_name, field_name)
+
+    async def _require_keyword_mapping(self, collection_name: str, field_name: str) -> None:
+        """An index created before the keyword template may have mapped the field dynamically as text, which
+        cannot be changed and would make a part-scoped delete match by token; the caller then treats the
+        field as not indexed."""
+        _, child = field_name.split(".", 1)
+        mappings = await self.client.indices.get_mapping(index=collection_name)  # type: ignore
+        for index, body in mappings.items():
+            props = body.get("mappings", {}).get("properties", {}).get("metadata", {}).get("properties", {})
+            kind = props.get(child, {}).get("type")
+            if kind != "keyword":
+                raise VectorStoreError(
+                    f"index '{index}' maps '{field_name}' as {kind}, not keyword: split writes to it are refused",
+                    details={"index": index, "field": field_name},
+                )
 
     # ------------------------------------------------------------------
     # Filter construction

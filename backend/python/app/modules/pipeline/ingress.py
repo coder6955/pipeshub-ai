@@ -12,6 +12,8 @@ from typing import Any
 from app.config.constants.arangodb import CollectionNames, Connectors, ProgressStatus
 from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.models.entities import Record
+from app.modules.indexing.owner_connector import owner_connector_id
+from app.modules.indexing.split_state import prime_parts
 from app.modules.pipeline.coordinator import Coordinator
 from app.modules.pipeline.fingerprint import content_facts
 from app.modules.pipeline.models import Priority, RecordView
@@ -23,6 +25,7 @@ from app.services.resource_governor.tiers import classify as classify_tier
 EMBED = "embed"
 # ClassifyStage.name; the stage module imports the extraction stack, so not imported here.
 CLASSIFY = "classify"
+ENTITIES = "entities"
 
 
 class StageIngress:
@@ -78,11 +81,12 @@ class StageIngress:
         return not await self._coordinator.has_seen_revision(str(vrid), str(rev))
 
     async def on_indexed(
-        self, record: Record, *, trigger: str | None, defer_classify: bool = False
+        self, record: Record, *, trigger: str | None, defer_classify: bool = False, defer_entities: bool = False,
     ) -> list[str]:
         """Record ``embed`` for the record's revision and dispatch its successors;
         with ``defer_classify``, all but classification, which the record's first
-        use asks for (``first_use``)."""
+        use asks for (``first_use``). ``defer_entities`` likewise holds back named entities: a split parent
+        records ``embed`` for its revision and leaves both stages to the roll-up of its parts."""
         container = record.block_containers
         facts = content_facts(container)
         document = await self._graph.get_document(
@@ -97,12 +101,13 @@ class StageIngress:
             rev = facts.blocks_digest[:16]
             await self._graph.update_node(record.id, CollectionNames.RECORDS.value, {"contentRev": rev})
         extension = getattr(record, "extension", None)
+        await prime_parts([record], self._graph)
         view = RecordView(
             org_id=record.org_id,
             virtual_record_id=record.virtual_record_id or "",
             rev=rev,
             record_ids=(record.id,),
-            connector_id=record.connector_id or "",
+            connector_id=owner_connector_id(record) or "",
             tier=classify_tier(extension if isinstance(extension, str) else None, record.mime_type),
             mime_type=record.mime_type,
             text_digest=facts.text_digest,
@@ -121,5 +126,5 @@ class StageIngress:
             force=record.id in self._forced,
             # The record is already searchable; a broker hiccup must not fail it.
             keep_claim_on_publish_failure=True,
-            defer=frozenset({CLASSIFY}) if defer_classify else frozenset(),
+            defer=frozenset(({CLASSIFY} if defer_classify else set()) | ({ENTITIES} if defer_entities else set())),
         )

@@ -319,6 +319,16 @@ config:
   maxConcurrentParsing: ""
   maxConcurrentIndexing: ""
   maxPendingIndexingTasks: ""
+  # Large PDFs (docs/indexing-service.md, section 4.15). Empty part pages and part bytes derive from the OCR page cap and the
+  # heavy-file size. Before a downgrade set pdfSplitEnabled to "false" and pdfSplitRollback to "dry-run", then "apply".
+  pdfSplitEnabled: "true"
+  pdfSplitMinPages: "500"
+  pdfSplitPartPages: ""
+  pdfSplitMaxPartBytes: ""
+  pdfSplitOverlapPages: "1"
+  pdfSplitTimeoutSeconds: "1800"
+  pdfSplitRollback: ""
+  pdfSplitRollbackOrg: ""
   distributedIndexingConcurrency: true
   # Query-service uvicorn workers. Above 1 runs N separate query processes in the
   # pod; per-process budgets divide by the count (app/utils/worker_scaling.py).

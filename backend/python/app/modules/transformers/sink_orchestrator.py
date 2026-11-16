@@ -27,6 +27,9 @@ from app.modules.indexing.parse_now_marker import (
     marker_fields,
 )
 from app.modules.indexing.replay_set import note_record_completed
+from app.modules.indexing.split_parent_flag import split_parent_active
+from app.modules.indexing.split_rollup import part_terminal
+from app.modules.indexing.split_state import is_part, prime_parts, record_block_count
 from app.modules.record_metadata.builtin import ticket_metadata
 from app.modules.record_metadata.projection import (
     NOT_PROVIDED,
@@ -62,11 +65,13 @@ from app.modules.transformers.transformer import (
     EXTRACTION_DEFERRED_FIELD,
     IMAGE_DESCRIPTION_BUDGET_S,
     PARSE_NOW,
+    SPLIT_PARENT_GEN,
     STORE_ONLY,
     TransformContext,
     Transformer,
 )
 from app.modules.transformers.vectorstore import VectorStore
+from app.modules.transformers.write_scope import WriteScope
 from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.featureflag.platform_settings import (
@@ -129,7 +134,7 @@ class SinkOrchestrator(Transformer):
         graph_provider: IGraphDBProvider,
         logger,
         config_service: "ConfigurationService",
-        entity_vector_store: Optional[EntityVectorStore] = None,
+        entity_vector_store: EntityVectorStore | None = None,
         entity_resolver: Optional["EntityResolver"] = None,
     ) -> None:
         super().__init__()
@@ -891,7 +896,9 @@ class SinkOrchestrator(Transformer):
         if current_attempt() is not None:
             status.update(cleared_fields())
         if ctx.settings.get(ENRICHMENT_FOLLOWS):
-            if await is_classify_on_first_use_enabled(self.config_service):
+            # A part is never left for first use: nobody opens a part, and the file's own summary waits for every part's
+            # classification (the roll-up reads those states), so a deferred part would hold the file's summary for ever.
+            if split_parent_active() or (not is_part(record) and await is_classify_on_first_use_enabled(self.config_service)):
                 # Decided here, once, so the status and the dispatch agree.
                 ctx.settings = {**ctx.settings, ENRICHMENT_FOLLOWS: False, ENRICHMENT_DEFERRED: True}
                 status["extractionStatus"] = ProgressStatus.NOT_STARTED.value
@@ -922,12 +929,19 @@ class SinkOrchestrator(Transformer):
         # The record is only searchable now, so the accessible-record map that
         # gates search is stale. Connector records arrive in bursts, so their
         # deletes are coalesced (see `on_record_indexed`).
-        await notify_record_indexed(
-            connector_name=record.connector_name,
-            connector_id=record.connector_id,
-            external_record_group_id=record.external_record_group_id,
-            org_id=record.org_id,
-        )
+        await prime_parts([record], self.graph_provider)
+        # Before the roll-up, so a file that reads COMPLETED already has its counts.
+        containers = record.block_containers
+        await record_block_count(record, len(containers.blocks) if containers is not None else None, self.graph_provider)
+        await part_terminal(record, ProgressStatus.COMPLETED)
+        # A part is not what a user sees: the file becomes searchable when its roll-up completes (``split_wiring``).
+        if not is_part(record):
+            await notify_record_indexed(
+                connector_name=record.connector_name,
+                connector_id=record.connector_id,
+                external_record_group_id=record.external_record_group_id,
+                org_id=record.org_id,
+            )
         return True
 
     # ------------------------------------------------------------------
@@ -979,6 +993,9 @@ class SinkOrchestrator(Transformer):
         metadata = record.semantic_metadata
         if metadata is None or not (metadata.summary or "").strip():
             return
+        # The classify stage of a split parent runs outside the manifest's indexing context, so the file's own
+        # segment and generation travel on the context.
+        scope = await WriteScope.of_record(record, gen=ctx.settings.get(SPLIT_PARENT_GEN))
         # Not wrapped in a stage: it times its own steps.
         await self.vector_store.index_record_summary(
             record.id,
@@ -986,6 +1003,7 @@ class SinkOrchestrator(Transformer):
             record.org_id,
             metadata,
             record,
+            scope=scope,
         )
 
     async def write_enrichment(self, ctx: TransformContext, *, index_summary: bool = True) -> None:

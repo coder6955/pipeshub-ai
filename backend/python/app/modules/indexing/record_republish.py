@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import EventTypes, OriginTypes, ProgressStatus
 from app.connectors.sources.localKB.push.contract import is_pushed_revision
+from app.modules.indexing.owner_connector import is_part_record
 from app.services.graph_db.common.record_visibility import (
     is_live_record,
     is_searchable_record,
@@ -112,5 +113,7 @@ def republish_eligible(record: Mapping[str, object], status: str) -> tuple[bool,
         and live
         and status in (ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value)
     )
-    eligible = record.get("origin") == OriginTypes.CONNECTOR.value or restored_upload or pushed
+    eligible = (
+        record.get("origin") == OriginTypes.CONNECTOR.value or is_part_record(record) or restored_upload or pushed
+    )
     return eligible, restored_upload

@@ -6,10 +6,10 @@ these tests provide additional coverage for edge cases and boundary conditions.
 """
 
 import asyncio
+import contextlib
 import hashlib
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import AbstractContextManager
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
@@ -139,17 +139,26 @@ async def _mock_processor_gen(*args, **kwargs):
     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
 
 
+@contextlib.contextmanager
 def _pdf_inspection(
-    needs_ocr: bool = False, page_count: int | None = None, **patch_kwargs: object
-) -> AbstractContextManager[AsyncMock]:
-    """Patch the PDF inspection to read every file as sent, deciding *needs_ocr*."""
+    needs_ocr: bool = False, page_count: int | None = None, counted: int | None = None, **patch_kwargs: object
+) -> Iterator[AsyncMock]:
+    """Patch the PDF inspection to read every file as sent, deciding *needs_ocr*.
+
+    The pdfium-only page count that precedes it answers *counted* (None: pdfium cannot open the file, so
+    the inspection decides, as for every file before the pre-count existed).
+    """
     patch_kwargs.setdefault(
         "side_effect",
         lambda content, **_kw: InspectedPdf(
             content, needs_ocr=needs_ocr, repaired=False, page_count=page_count
         ),
     )
-    return patch("app.events.events.inspect_untrusted_pdf", new_callable=AsyncMock, **patch_kwargs)
+    with (
+        patch("app.events.events.count_pdf_pages", new_callable=AsyncMock, return_value=counted),
+        patch("app.events.events.inspect_untrusted_pdf", new_callable=AsyncMock, **patch_kwargs) as inspect,
+    ):
+        yield inspect
 
 
 # ===========================================================================

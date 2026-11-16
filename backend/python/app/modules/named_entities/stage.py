@@ -14,7 +14,11 @@ from typing import TYPE_CHECKING
 from app.modules.entity_resolution.models import ResolutionMode
 from app.modules.named_entities.coref import link_short_forms
 from app.modules.named_entities.domain.config import load_named_entity_config
-from app.modules.named_entities.domain.models import NamedEntityExtraction, model_failed
+from app.modules.named_entities.domain.models import (
+    UNION_STRATEGY,
+    NamedEntityExtraction,
+    model_failed,
+)
 from app.modules.named_entities.extractor import (
     NamedEntityExtractor,
     NamedEntityRequest,
@@ -60,6 +64,10 @@ def needs_reextract(extraction: NamedEntityExtraction) -> bool:
     the agent stopped with blocks it had not read. A failed call is not one of
     these: the entities stage retries the whole record (``model_failed``)."""
     stats = extraction.stats
+    if extraction.strategy == UNION_STRATEGY:
+        # The union of a split file's parts: the file holds only a manifest, so what a part left unread is that part's to
+        # extract again (its completion replaces its output and the union is merged anew), never the file's.
+        return False
     if extraction.status != "PARTIAL" or stats.windows_run >= REEXTRACT_MAX_WINDOWS or model_failed(extraction):
         return False
     if stats.windows_total > stats.windows_run:

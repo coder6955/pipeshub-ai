@@ -12,8 +12,15 @@ from typing import TYPE_CHECKING, Any
 
 from app.config import file_types
 from app.config.configuration_service import ConfigurationService
-from app.models.blocks import BlocksContainer, SemanticMetadata
+from app.models.blocks import (
+    Block,
+    BlocksContainer,
+    BlockType,
+    DataFormat,
+    SemanticMetadata,
+)
 from app.modules.artifacts.sidecars import ArtifactSidecars, classification_envelope
+from app.modules.indexing.split_state import SplitRow, is_part
 from app.modules.pipeline.leases import RecordLeases, RevisionSuperseded
 from app.modules.pipeline.models import StageJob
 from app.modules.pipeline.policy import PipelinePolicy
@@ -26,11 +33,13 @@ from app.modules.pipeline.stages.record_io import (
     with_classification,
 )
 from app.modules.transformers.stored_write import SidecarWrite
+from app.modules.transformers.transformer import SPLIT_PARENT_GEN
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.indexing_timing import stage
 from app.utils.llm import indexing_model_identity, load_ai_models
 
 if TYPE_CHECKING:
+    from app.modules.indexing.split_inputs import ClassifyInput, ParentInputs
     from app.modules.transformers.blob_storage import BlobStorage
     from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 
@@ -56,6 +65,7 @@ class GraphClassifyIO(RecordStageIO):
         record_leases: RecordLeases,
         connector_deleting: ConnectorDeleting | None = None,
         sidecars: ArtifactSidecars | None = None,
+        split_inputs: "ParentInputs | None" = None,
     ) -> None:
         super().__init__(
             job,
@@ -72,6 +82,29 @@ class GraphClassifyIO(RecordStageIO):
         self._config_service = config_service
         self._sidecars = sidecars
         self._departments: list[str] | None = None
+        self._split_inputs = split_inputs
+        self._parent_input: ClassifyInput | None = None
+        self._parent_input_read = False
+
+    async def _parent_classify_input(self, job: StageJob) -> "ClassifyInput | None":
+        """The manifest and part summaries when the job's file is a split parent, else None. Read once per job:
+        only a PDF can be split, so no other record pays for the lookup."""
+        if not self._parent_input_read:
+            self._parent_input_read = True
+            if self._split_inputs is not None and await self._may_be_split(job):
+                name, _record_type = await self._record_header(job)
+                self._parent_input = await self._split_inputs.classify(job.virtual_record_id, name)
+        return self._parent_input
+
+    async def input_digest(self, job: StageJob) -> str:
+        parent = await self._parent_classify_input(job)
+        return parent.digest if parent is not None else job.text_digest
+
+    async def load_blocks(self, job: StageJob) -> BlocksContainer | None:
+        parent = await self._parent_classify_input(job)
+        if parent is None:
+            return await super().load_blocks(job)
+        return BlocksContainer(blocks=[Block(index=0, type=BlockType.TEXT, format=DataFormat.TXT, data=parent.text)])
 
     async def departments(self, org_id: str) -> list[str]:
         if self._departments is None:
@@ -120,11 +153,11 @@ class GraphClassifyIO(RecordStageIO):
             still_current=still_current,
             # Before the classification goes back: once the stored record has it, the job counts
             # as done, so a summary point that failed after that would stay missing.
-            before=lambda: self._restore_summary_point(owner, metadata),
+            before=lambda: self._restore_summary_point(job, owner, metadata),
             sidecar=self._sidecar(job),
         )
 
-    async def _restore_summary_point(self, record_id: str, metadata: SemanticMetadata) -> None:
+    async def _restore_summary_point(self, job: StageJob, record_id: str, metadata: SemanticMetadata) -> None:
         # The re-index of unchanged content that left the stored record without its
         # classification also deleted the record's vectors, its summary point among them.
         # Put that back from the kept classification too; the graph taxonomy survives a re-index.
@@ -132,6 +165,10 @@ class GraphClassifyIO(RecordStageIO):
         if ctx is None:
             raise RevisionSuperseded(record_id)
         ctx.record.semantic_metadata = metadata
+        # The point of a split parent carries its segment and generation like every other point of the file.
+        parent = await self._split_row(job, owner=record_id)
+        if parent is not None:
+            ctx.settings = {**ctx.settings, SPLIT_PARENT_GEN: parent.gen}
         await self._sink.write_summary_point(ctx)
 
     def _sidecar(self, job: StageJob) -> SidecarWrite | None:
@@ -155,13 +192,36 @@ class GraphClassifyIO(RecordStageIO):
 
         return SidecarWrite(job.stage_version, write)
 
+    async def _split_row(self, job: StageJob, *, owner: str) -> SplitRow | None:
+        """The file's row now. A summary built from one generation's part summaries is never written under another: a forced
+        reindex of unchanged bytes keeps the revision and makes a new generation, so the revision alone would let it through."""
+        if self._split_inputs is None or not await self._may_be_split(job):
+            return None
+        row = await self._split_inputs.row(job.virtual_record_id)
+        built = self._parent_input
+        if row is not None and built is not None and built.gen and built.gen != row.gen:
+            raise RevisionSuperseded(owner)
+        return row
+
     async def save(self, job: StageJob, record_ids: list[str], metadata: SemanticMetadata) -> None:
         # Content-level outputs are shared by every record on the revision; edges are per record.
         owner = record_ids[0]
+        document = await self._document(owner)
+        if is_part(document):
+            # A part is classified for its file's sake: the classification goes into its stored record and its
+            # stage state, and nothing else (no summary point, no taxonomy edges: the parent writes those once).
+            await self._write_section(
+                job, owner, lambda current: with_classification(current, metadata.model_dump(mode="json")),
+                sidecar=self._sidecar(job),
+            )
+            return
         ctx = await self._context(owner, None)
         if ctx is None:
             raise RevisionSuperseded(owner)
         ctx.record.semantic_metadata = metadata
+        parent = await self._split_row(job, owner=owner)
+        if parent is not None:
+            ctx.settings = {**ctx.settings, SPLIT_PARENT_GEN: parent.gen}
         # Resolution reads the graph (and may ask the model) before anything is written.
         await self._sink.prepare_enrichment(ctx)
         classification = metadata.model_dump(mode="json")

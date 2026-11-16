@@ -103,8 +103,12 @@ class TestNeo4jLabel:
         assert Neo4jLabel.AGENT_SKILL_VERSIONS.value == "AgentSkillVersions"
         assert Neo4jLabel.AGENT_SKILL_CANDIDATES.value == "AgentSkillCandidates"
 
+    def test_content_split_labels(self) -> None:
+        assert Neo4jLabel.CONTENT_SPLITS.value == "ContentSplit"
+        assert Neo4jLabel.CONTENT_SPLIT_PARTS.value == "ContentSplitPart"
+
     def test_total_member_count(self) -> None:
-        assert len(Neo4jLabel) == 51
+        assert len(Neo4jLabel) == 53
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +148,10 @@ class TestNeo4jRelationshipType:
     def test_record_link_relationship(self) -> None:
         """Links between records are stored apart from the hierarchy."""
         assert Neo4jRelationshipType.RECORD_LINK.value == "RECORD_LINK"
+
+    def test_content_split_labels(self) -> None:
+        assert Neo4jLabel.CONTENT_SPLITS.value == "ContentSplit"
+        assert Neo4jLabel.CONTENT_SPLIT_PARTS.value == "ContentSplitPart"
 
     def test_total_member_count(self) -> None:
         assert len(Neo4jRelationshipType) == 31
@@ -203,6 +211,8 @@ class TestCollectionToLabelMapping:
             (CollectionNames.AGENT_SKILLS.value, Neo4jLabel.AGENT_SKILLS.value),
             (CollectionNames.AGENT_SKILL_VERSIONS.value, Neo4jLabel.AGENT_SKILL_VERSIONS.value),
             (CollectionNames.AGENT_SKILL_CANDIDATES.value, Neo4jLabel.AGENT_SKILL_CANDIDATES.value),
+            (CollectionNames.CONTENT_SPLITS.value, Neo4jLabel.CONTENT_SPLITS.value),
+            (CollectionNames.CONTENT_SPLIT_PARTS.value, Neo4jLabel.CONTENT_SPLIT_PARTS.value),
         ]
         for arango_key, neo4j_label in expected_pairs:
             assert COLLECTION_TO_LABEL[arango_key] == neo4j_label, (
@@ -211,7 +221,7 @@ class TestCollectionToLabelMapping:
             )
 
     def test_mapping_size(self) -> None:
-        assert len(COLLECTION_TO_LABEL) == 51
+        assert len(COLLECTION_TO_LABEL) == 53
 
     def test_all_values_are_strings(self) -> None:
         for k, v in COLLECTION_TO_LABEL.items():

@@ -337,6 +337,31 @@ class TestDeleteConnectorEmbeddingsEvent:
         assert pipeline.purge_connector.call_args.args[1] == ["rg-1", "rg-2"]
 
     @pytest.mark.asyncio
+    async def test_with_a_split_runtime_the_parts_the_connector_owned_are_re_homed_within_its_organisation(self) -> None:
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.purge_connector = AsyncMock(return_value={"success": True})
+        handler.event_processor.split_runtime = MagicMock()
+        handler.event_processor.split_runtime.sweep.rehome_owned_by = AsyncMock(return_value=1)
+
+        await _collect_events(
+            handler, EventTypes.DELETE_CONNECTOR_EMBEDDINGS.value, {"orgId": "org-1", "connectorId": "conn-1"},
+        )
+
+        handler.event_processor.split_runtime.sweep.rehome_owned_by.assert_awaited_once_with("org-1", "conn-1")
+
+    @pytest.mark.asyncio
+    async def test_without_an_organisation_nothing_is_re_homed(self) -> None:
+        handler = _make_handler()
+        handler.event_processor.processor.indexing_pipeline.purge_connector = AsyncMock(return_value={"success": True})
+        handler.event_processor.split_runtime = MagicMock()
+        handler.event_processor.split_runtime.sweep.rehome_owned_by = AsyncMock()
+
+        await _collect_events(handler, EventTypes.DELETE_CONNECTOR_EMBEDDINGS.value, {"connectorId": "conn-1"})
+
+        handler.event_processor.split_runtime.sweep.rehome_owned_by.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_a_payload_carrying_vrids_still_takes_the_membership_path(self):
         """eventType decides, not the keys. A stray virtualRecordIds must not
         silently switch the event back to the id-shipping route."""

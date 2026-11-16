@@ -198,3 +198,11 @@ class BlockContainerValidationError(IndexingError):
             f"{context}Block container validation failed — {msg}",
             record_id=record_id,
         )
+
+
+class SplitScopeError(VectorStoreError):
+    """A write to the points of a split file named no segment, or ran on a collection whose segment
+    fields are not indexed. Either would let a delete reach another part's points (or match nothing),
+    so the write is refused."""
+
+    pass

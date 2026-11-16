@@ -34,6 +34,8 @@ class FakeGraph:
         self.apps = {ON: {"isActive": True}, OFF: {"isActive": False}}
         self.unlinked: set[str] = set()
         self.records: dict[str, dict[str, Any]] = {}
+        # contentSplitParts documents (a part's owner and place), keyed by the part record's key
+        self.parts: dict[str, dict[str, Any]] = {}
         self.fail_reads_after: int | None = None
         self.reads = 0
         self.record_reads: list[dict] = []
@@ -45,9 +47,18 @@ class FakeGraph:
     async def get_document(self, key, collection, transaction=None, *, raise_on_error=False) -> dict | None:
         if collection == CollectionNames.APPS.value:
             app = self.apps.get(key)
-            return dict(app) if app else None
+            return {"orgId": "org-1", **app} if app else None
+        if collection == CollectionNames.CONTENT_SPLIT_PARTS.value:
+            part = self.parts.get(key)
+            return {"id": key, **part} if part else None
         doc = self.records.get(key)
         return dict(doc) if doc else None
+
+    async def get_nodes_by_field_in(self, collection, field_name, field_values, return_fields=None, transaction=None, *, raise_on_error=False) -> list[dict]:
+        assert collection == CollectionNames.CONTENT_SPLIT_PARTS.value
+        return [
+            {"_key": key, "id": key, **part} for key, part in self.parts.items() if part.get(field_name) in set(field_values)
+        ]
 
     async def get_documents_paginated(
         self, collection, skip=0, limit=50, filters=None, sort_field=None,
@@ -57,6 +68,8 @@ class FakeGraph:
         source = self.records
         if collection == CollectionNames.APPS.value:
             source = {key: {"_key": key, "orgId": "org-1", **app} for key, app in self.apps.items()}
+        elif collection == CollectionNames.CONTENT_SPLIT_PARTS.value:
+            source = {key: {"_key": key, "orgId": "org-1", **part} for key, part in self.parts.items()}
         else:
             self.record_reads.append(dict(filters or {}))
             self.reads += 1
@@ -223,12 +236,20 @@ async def test_parked_records_are_read_only_per_connector_that_is_on() -> None:
         f for f in graph.record_reads
         if f.get("indexingStatus") == ProgressStatus.AUTO_INDEX_OFF.value
     ]
-    assert parked_reads == [{
-        "connectorId": ON,
-        "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
-        "reason": CONNECTOR_OFF,
-        "orgId": "org-1",
-    }]
+    assert parked_reads == [
+        {
+            "connectorId": ON,
+            "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
+            "reason": CONNECTOR_OFF,
+            "orgId": "org-1",
+        },
+        # The parts walk: only parked parts, by the hidden connector, never every part of the owner.
+        {
+            "connectorId": "pdfparts_org-1",
+            "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
+            "reason": CONNECTOR_OFF,
+        },
+    ]
 
 
 @pytest.mark.asyncio
@@ -271,7 +292,8 @@ def _a_sweep_tick_before_each_page(graph: FakeGraph, producer: Producer, at_ms: 
 
     async def tick_then_read(collection, *args, **kwargs) -> list[dict]:
         nonlocal in_tick
-        if collection == CollectionNames.RECORDS.value and not in_tick:
+        parts_walk = str((kwargs.get("filters") or {}).get("connectorId", "")).startswith("pdfparts_")
+        if collection == CollectionNames.RECORDS.value and not in_tick and not parts_walk:
             in_tick = True
             try:
                 ticks.append(await _sweep_at(graph, producer, at_ms))

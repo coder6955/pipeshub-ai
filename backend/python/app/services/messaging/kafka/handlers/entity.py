@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -33,7 +34,13 @@ from app.containers.connector import (
 from app.core import org_context
 from app.edition_services import get_data_entities_processor_cls
 from app.exceptions.non_retryable import NonRetryableError
+from app.modules.indexing.owner_connector import (
+    PartSkips,
+    is_part_record,
+    prime_readable,
+)
 from app.modules.indexing.record_republish import record_event
+from app.modules.indexing.split_state import part_records_pages
 from app.schema.node_validator import SchemaValidationError
 from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.graph_db.common.record_visibility import (
@@ -904,37 +911,16 @@ class EntityEventService(BaseEventService):
             return 0
 
         producer = self.app_container.messaging_producer
-        filters = {"connectorId": connector_id, **_PARKED_WHILE_OFF}
         requeued = 0
-        # "" rather than None, so the first page has the key predicate too:
-        # Neo4j uses the (connectorId, indexingStatus, reason, id) index only
-        # when every property in it has one.
-        after_key = ""
-        while True:
-            page = await self.graph_provider.get_documents_paginated(
-                CollectionNames.RECORDS.value,
-                limit=_REQUEUE_PAGE_SIZE,
-                filters=filters,
-                sort_field="_key",
-                raise_on_error=True,
-                after_key=after_key,
-            )
-            if not page:
-                break
-            # Advanced before any work, so nothing on this page is read again.
-            after_key = page[-1].get("_key") or page[-1].get("id")
-            if not after_key:
-                self.logger.error(
-                    f"Last parked record of connector {connector_id} has no key; "
-                    "stopping the re-queue rather than reading the page again"
-                )
-                break
-
+        part_skips = PartSkips()
+        async for page in self._parked_pages(connector_id):
+            # A part with no document is skipped and counted; the rest of the page is still requeued.
+            readable = await prime_readable(page, self.graph_provider, part_skips, self.logger)
             candidates = [
                 (key, record)
-                for record in page
+                for record in readable
                 if (key := record.get("_key") or record.get("id"))
-                and record.get("origin") == OriginTypes.CONNECTOR.value
+                and (record.get("origin") == OriginTypes.CONNECTOR.value or is_part_record(record))
                 and is_live_record(record)
             ]
             now = get_epoch_timestamp_in_ms()
@@ -962,14 +948,44 @@ class EntityEventService(BaseEventService):
                 )
             requeued += len(sent)
 
-            if len(page) < _REQUEUE_PAGE_SIZE:
-                break
-
         if requeued:
             self.logger.info(
                 f"Re-queued {requeued} record(s) parked while connector {connector_id} was off"
             )
         return requeued
+
+    async def _parked_pages(self, connector_id: str) -> AsyncGenerator[list[dict], None]:
+        """Pages of the records parked while *connector_id* was off: its own, then its parts (a part
+        sits under the hidden parts connector, so it is found through the part documents' owner)."""
+        # "" rather than None, so the first page has the key predicate too:
+        # Neo4j uses the (connectorId, indexingStatus, reason, id) index only
+        # when every property in it has one.
+        after_key = ""
+        while True:
+            page = await self.graph_provider.get_documents_paginated(
+                CollectionNames.RECORDS.value,
+                limit=_REQUEUE_PAGE_SIZE,
+                filters={"connectorId": connector_id, **_PARKED_WHILE_OFF},
+                sort_field="_key",
+                raise_on_error=True,
+                after_key=after_key,
+            )
+            if not page:
+                break
+            after_key = page[-1].get("_key") or page[-1].get("id")
+            if not after_key:
+                self.logger.error(
+                    f"Last parked record of connector {connector_id} has no key; "
+                    "stopping the re-queue rather than reading the page again"
+                )
+                return
+            yield page
+            if len(page) < _REQUEUE_PAGE_SIZE:
+                break
+        async for part_page in part_records_pages(
+            self.graph_provider, connector_id, None, dict(_PARKED_WHILE_OFF), page_size=_REQUEUE_PAGE_SIZE,
+        ):
+            yield part_page
 
     @staticmethod
     def _requeued_fields(record: dict, now: int) -> dict:

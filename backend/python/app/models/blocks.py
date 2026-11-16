@@ -618,6 +618,9 @@ class BlocksContainer(BaseModel):
     blocks: list[Block] = Field(default_factory=list)
     # PARSER_VERSION of a code parse, so a stored blob says which fact schema it holds.
     code_facts_version: Optional[str] = None
+    # A split part's blocks of the overlap page(s) after its last core page, in the original file's page
+    # numbering. A reader addresses them as local index len(blocks) + j; None for every other record.
+    trailing_context: list[Block] | None = None
 
     def extend(self, other: 'BlocksContainer') -> None:
         """Append *other*'s content, rebasing its indices onto this container.

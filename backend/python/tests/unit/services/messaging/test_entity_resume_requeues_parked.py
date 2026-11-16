@@ -95,7 +95,7 @@ class FakeGraph:
     ) -> list[dict]:
         assert after_key is None or sort_field == "_key"
         rows = [
-            dict(doc) for doc in self.docs[collection].values()
+            dict(doc) for doc in self.docs.get(collection, {}).values()
             if all(doc.get(f) == v for f, v in (filters or {}).items())
             and (after_key is None or doc["_key"] > after_key)
         ]
@@ -407,3 +407,24 @@ async def test_the_enable_still_succeeds_when_the_requeue_fails() -> None:
     )
     await _requeue_finished()
     assert producer.sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_part_with_no_document_is_skipped_and_the_rest_of_the_page_is_requeued() -> None:
+    from app.modules.indexing.split_state import clear_part_cache
+
+    clear_part_cache()
+    graph, producer = FakeGraph(), FakeProducer()
+    svc = _service(graph, producer)
+    _set_active(graph, True)
+    parked = _record("parked", ProgressStatus.AUTO_INDEX_OFF.value, reason=CONNECTOR_OFF)
+    orphan = _record("orphan-part", ProgressStatus.AUTO_INDEX_OFF.value, reason=CONNECTOR_OFF, connectorId="pdfparts_org-1")
+    graph.records()["parked"], graph.records()["orphan-part"] = parked, orphan
+
+    async def pages(_connector_id: str):  # noqa: ANN202
+        yield [dict(orphan), dict(parked)]
+
+    svc._parked_pages = pages  # type: ignore[method-assign]
+
+    assert await svc._requeue_records_parked_while_off(CONNECTOR_ID) == 1
+    assert producer.sent_keys() == {"parked"}

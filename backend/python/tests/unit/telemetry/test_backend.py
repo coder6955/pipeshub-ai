@@ -126,3 +126,33 @@ class TestRegistryIsolation:
 
     def test_module_level_singleton_is_a_metrics_backend(self):
         assert isinstance(METRICS_BACKEND, MetricsBackend)
+
+
+class TestInstrumentsWithoutLabels:
+    """A metric declared with no label names is incremented directly: ``labels()`` with no names raises in
+    ``prometheus_client``, which turned one dropped malformed search point into a failed search."""
+
+    def test_a_label_free_counter_counts(self) -> None:
+        backend = PrometheusBackend()
+        counter = backend.counter("t_nolabel_total", "help", [])
+        counter.inc()
+        counter.inc(value=2)
+        assert "t_nolabel_total 3.0" in backend.serialize()
+
+    def test_a_label_free_gauge_and_histogram_record(self) -> None:
+        backend = PrometheusBackend()
+        backend.gauge("t_nolabel_gauge", "help", []).set(value=5)
+        backend.histogram("t_nolabel_seconds", "help", [], [1.0, 10.0]).observe(value=3)
+        text = backend.serialize()
+        assert "t_nolabel_gauge 5.0" in text and "t_nolabel_seconds_count 1.0" in text
+
+    def test_the_split_metric_counts_a_dropped_point_on_the_prometheus_backend(self, monkeypatch) -> None:
+        from app.telemetry.modules import split_metrics
+
+        backend = PrometheusBackend()
+        monkeypatch.setattr(
+            split_metrics, "BAD_BLOCK_ADDRESS_POINTS",
+            backend.counter("pipeshub_split_bad_block_address_total", "help", []),
+        )
+        split_metrics.BAD_BLOCK_ADDRESS_POINTS.inc()
+        assert "pipeshub_split_bad_block_address_total 1.0" in backend.serialize()

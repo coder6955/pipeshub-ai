@@ -23,6 +23,9 @@ def make_record_handler(
     logger = logger or MagicMock()
     config_service = config_service or AsyncMock()
     event_processor = event_processor or MagicMock()
+    if isinstance(event_processor, MagicMock) and "split_runtime" not in vars(event_processor):
+        # A bare MagicMock invents a truthy attribute for anything: say outright that this handler has no split runtime.
+        event_processor.split_runtime = None
     producer = producer if producer is not None else AsyncMock()
 
     # Ensure event_processor has the nested objects the handler expects

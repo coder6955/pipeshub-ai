@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import EventTypes, ProgressStatus
 from app.core.org_context import spawn_in_request
+from app.modules.indexing.owner_connector import is_part_record, owner_connector_id
 from app.services.featureflag.platform_settings import is_classify_on_first_use_enabled
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -40,7 +41,8 @@ def unclassified(records: list[Any]) -> list[dict[str, Any]]:
     """The indexed records in ``records`` whose classification waits for first use."""
     found: list[dict[str, Any]] = []
     for doc in records:
-        if not isinstance(doc, dict):
+        if not isinstance(doc, dict) or is_part_record(doc):
+            # A part is classified with the file it was cut from, never on its own.
             continue
         if (
             doc.get("indexingStatus") == ProgressStatus.COMPLETED.value
@@ -61,7 +63,7 @@ def first_use_event(doc: dict[str, Any], org_id: str) -> dict[str, Any]:
             "recordId": doc.get("_key") or doc.get("id"),
             "orgId": org_id,
             "virtualRecordId": doc.get("virtualRecordId"),
-            "connectorId": doc.get("connectorId"),
+            "connectorId": owner_connector_id(doc),
             "connectorName": doc.get("connectorName"),
             "mimeType": doc.get("mimeType"),
             "stages": ["classify"],

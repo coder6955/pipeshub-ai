@@ -6,12 +6,19 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.neo4j import collection_to_label
-from app.schema.arango.documents import record_schema, stage_state_schema
+from app.schema.arango.documents import (
+    content_split_part_schema,
+    content_split_schema,
+    record_schema,
+    stage_state_schema,
+)
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 STAGES = CollectionNames.STAGE_STATES.value
 RECORDS = CollectionNames.RECORDS.value
+SPLITS = CollectionNames.CONTENT_SPLITS.value
+SPLIT_PARTS = CollectionNames.CONTENT_SPLIT_PARTS.value
 LABEL = collection_to_label(STAGES)
 
 
@@ -32,12 +39,24 @@ class TestArangoPipelineSchema:
 
         await provider.ensure_pipeline_schema()
 
-        client.create_collection.assert_awaited_once_with(STAGES, schema=stage_state_schema)
+        assert [(c.args, c.kwargs) for c in client.create_collection.await_args_list] == [
+            ((STAGES,), {"schema": stage_state_schema}),
+            ((SPLITS,), {"schema": content_split_schema}),
+            ((SPLIT_PARTS,), {"schema": content_split_part_schema}),
+        ]
         assert [call.args for call in client.update_collection_schema.await_args_list] == [
             (STAGES, stage_state_schema),
+            (SPLITS, content_split_schema),
+            (SPLIT_PARTS, content_split_part_schema),
             (RECORDS, record_schema),
         ]
         assert [call.args for call in client.ensure_persistent_index.await_args_list] == [
+            (SPLITS, ["orgId", "state"]),
+            (SPLITS, ["state", "updatedAtMs"]),
+            (SPLIT_PARTS, ["rootVirtualRecordId"]),
+            (SPLIT_PARTS, ["rootVirtualRecordId", "gen"]),
+            (SPLIT_PARTS, ["ownerConnectorId"]),
+            (SPLIT_PARTS, ["virtualRecordId"]),
             (STAGES, ["status", "updatedAtMs"]),
             (STAGES, ["virtualRecordId", "rev"]),
             (STAGES, ["connectorId"]),
@@ -54,7 +73,7 @@ class TestArangoPipelineSchema:
         await provider.ensure_pipeline_schema()
 
         client.create_collection.assert_not_awaited()
-        assert client.update_collection_schema.await_count == 2
+        assert [call.args[0] for call in client.update_collection_schema.await_args_list] == [STAGES, SPLITS, SPLIT_PARTS, RECORDS]
 
     async def test_records_the_connector_service_has_not_created_yet_raise(self) -> None:
         provider, client = _arango()
@@ -132,7 +151,12 @@ class TestNeo4jPipelineSchema:
         await provider.ensure_pipeline_schema()
 
         queries = _queries(execute)
-        assert sum(query.startswith("CREATE CONSTRAINT") for query in queries) == 2
+        # The stage key is tried twice (the first fails on the duplicates); each split collection has its own unique key.
+        constraints = [query for query in queries if query.startswith("CREATE CONSTRAINT")]
+        assert [c.split()[2] for c in constraints] == [
+            f"{LABEL.lower()}_id_unique", f"{LABEL.lower()}_id_unique",
+            f"{collection_to_label(SPLITS).lower()}_id_unique", f"{collection_to_label(SPLIT_PARTS).lower()}_id_unique",
+        ]
         assert any("DETACH DELETE" in query for query in queries)
         provider.logger.warning.assert_called_once()
 

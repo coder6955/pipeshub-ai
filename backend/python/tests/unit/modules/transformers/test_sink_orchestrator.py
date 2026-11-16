@@ -7,10 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import pytest
 
 from app.exceptions.indexing_exceptions import RecordDeletedError
+from app.models.entities import EntityRecord, EntityType
 from app.modules.transformers.entity_vectorstore import EntityWriteOutcome
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
-from app.models.entities import EntityRecord, EntityType
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -775,6 +774,50 @@ class TestIndexedWriteWhenEnrichmentFollows:
         assert not ctx.settings["enrichment_follows"]
 
     @pytest.mark.asyncio
+    async def test_a_split_parent_defers_classification_even_with_first_use_off(self) -> None:
+        """Its stages read what its parts produce, so the write leaves both for the roll-up."""
+        from app.modules.indexing.split_parent_flag import (
+            begin_split_parent,
+            end_split_parent,
+        )
+
+        orch = _make_orchestrator()
+        ctx = _make_ctx()
+        ctx.settings = {"enrichment_follows": True}
+
+        begin_split_parent("gen-1")
+        try:
+            with patch(
+                "app.modules.transformers.sink_orchestrator.is_classify_on_first_use_enabled",
+                AsyncMock(return_value=False),
+            ):
+                await orch._update_indexing_status(ctx)
+        finally:
+            end_split_parent()
+
+        (row,) = orch.graph_provider.batch_update_nodes.await_args.args[0]
+        assert (row["extractionStatus"], row["extractionDeferred"]) == ("NOT_STARTED", True)
+
+    @pytest.mark.asyncio
+    async def test_a_part_is_classified_at_once_even_with_classify_on_first_use_on(self) -> None:
+        """Nobody opens a part, and the file's summary waits for every part's classify state."""
+        orch = _make_orchestrator()
+        ctx = _make_ctx()
+        ctx.record.connector_id = "pdfparts_org-1"
+        ctx.settings = {"enrichment_follows": True}
+
+        with patch(
+            "app.modules.transformers.sink_orchestrator.is_classify_on_first_use_enabled",
+            AsyncMock(return_value=True),
+        ), patch("app.modules.transformers.sink_orchestrator.prime_parts", AsyncMock()):
+            await orch._update_indexing_status(ctx)
+
+        (row,) = orch.graph_provider.batch_update_nodes.await_args.args[0]
+        assert row["extractionStatus"] == "QUEUED"
+        assert "extractionDeferred" not in row
+        assert ctx.settings["enrichment_follows"] is True
+
+    @pytest.mark.asyncio
     async def test_without_a_stage_to_follow_extraction_is_left_alone(self) -> None:
         orch = _make_orchestrator()
         ctx = _make_ctx()
@@ -1093,3 +1136,20 @@ class TestIndexedWriteWhenRecordWasDeleted:
         orch.graph_provider.batch_upsert_nodes.assert_not_awaited()
         notify.assert_not_awaited()
         assert ctx.record.indexing_status != "COMPLETED"
+
+
+class TestSummaryPointOfASplitFile:
+    @pytest.mark.asyncio
+    async def test_the_parents_summary_point_is_written_as_the_files_own_segment(self) -> None:
+        from app.models.blocks import SemanticMetadata
+
+        orch = _make_orchestrator()
+        orch.vector_store.index_record_summary = AsyncMock()
+        ctx = _make_ctx()
+        ctx.record.semantic_metadata = SemanticMetadata(summary="the file")
+        ctx.settings = {"split_parent_gen": "gen-1"}
+
+        await orch.write_summary_point(ctx)
+
+        scope = orch.vector_store.index_record_summary.await_args.kwargs["scope"]
+        assert (scope.segment, scope.read_vrid, scope.gen) == (ctx.record.virtual_record_id, ctx.record.virtual_record_id, "gen-1")

@@ -25,6 +25,12 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.modules.indexing import replay_set
+from app.modules.indexing.owner_connector import (
+    PartSkips,
+    is_part_record,
+    owner_connector_id,
+    prime_readable,
+)
 from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.messaging.connector_off import ConnectorOffResult
@@ -189,9 +195,9 @@ def replayed_delivery(
 
 def gating_connector_id(record: Mapping[str, Any]) -> str | None:
     """The connector whose state decides whether this record is indexed."""
-    connector_id = record.get("connectorId")
-    if connector_id and record.get("origin") == OriginTypes.CONNECTOR.value:
-        return str(connector_id)
+    connector_id = owner_connector_id(record)
+    if connector_id and (record.get("origin") == OriginTypes.CONNECTOR.value or is_part_record(record)):
+        return connector_id
     return None
 
 
@@ -369,25 +375,30 @@ class GraphConnectorOffFilter:
 
         record_ids = sorted({str(messages[i].payload["recordId"]) for i in candidates})
         try:
-            docs = await asyncio.wait_for(
-                self._graph.get_nodes_by_field_in(
-                    CollectionNames.RECORDS.value, "id", record_ids, raise_on_error=True
-                ),
-                timeout=self._read_timeout_seconds,
-            )
-            records: dict[str, Mapping[str, Any]] = {}
-            for doc in docs or []:
-                key = (doc.get("_key") or doc.get("id")) if doc else None
-                if key:
-                    records[str(key)] = doc
-            # A record the handler would judge by another connector than its
-            # event names (one moved between connectors) is judged by that one.
-            others = {
-                c for c in (gating_connector_id(r) for r in records.values())
-                if c and c not in states
-            }
-            if others:
-                states.update(await self._read_states(others))
+            # One deadline for the whole read (the records, a part's document each, the connectors they name): a stalled
+            # read pauses the filter like a failed one and never holds the consumer's read loop.
+            async with asyncio.timeout(self._read_timeout_seconds):
+                docs = await asyncio.wait_for(
+                    self._graph.get_nodes_by_field_in(
+                        CollectionNames.RECORDS.value, "id", record_ids, raise_on_error=True
+                    ),
+                    timeout=self._read_timeout_seconds,
+                )
+                records: dict[str, Mapping[str, Any]] = {}
+                # A part is judged by the connector that owns its file, which its part document names; one with no
+                # document is left out (it is then judged as unread, not as the whole batch failing).
+                for doc in await prime_readable(docs or [], self._graph, PartSkips(), self._logger):
+                    key = (doc.get("_key") or doc.get("id")) if doc else None
+                    if key:
+                        records[str(key)] = doc
+                # A record the handler would judge by another connector than its
+                # event names (one moved between connectors) is judged by that one.
+                others = {
+                    c for c in (gating_connector_id(r) for r in records.values())
+                    if c and c not in states
+                }
+                if others:
+                    states.update(await self._read_states(others))
         except Exception as e:
             self._pause("read the records of turned-off connectors", e)
             return ConnectorOffResult()

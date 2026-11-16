@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import CollectionNames
 from app.models.blocks import BlocksContainer
 from app.models.entities import Record
+from app.modules.indexing.pdf_kind import is_pdf
 from app.modules.pipeline.connector_gate import ConnectorBeingDeleted
 from app.modules.pipeline.leases import RecordBusy, RecordLeases, RevisionSuperseded
 from app.modules.pipeline.models import StageJob
@@ -118,6 +119,11 @@ class RecordStageIO:
             if document is not None:
                 self._documents[record_id] = document
         return document
+
+    async def _may_be_split(self, job: StageJob) -> bool:
+        """Whether the job's file is a PDF, by the record's extension or mime type, as the split decision reads them."""
+        document = await self._document(job.record_ids[0]) or {}
+        return is_pdf(document.get("extension"), document.get("mimeType") or job.mime_type)
 
     async def _stored_record(self, job: StageJob) -> dict[str, Any] | None:
         if not self._stored_loaded:

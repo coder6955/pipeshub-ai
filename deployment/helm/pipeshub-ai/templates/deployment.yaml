@@ -111,6 +111,22 @@ spec:
             - name: MAX_PENDING_INDEXING_TASKS
               value: {{ .Values.config.maxPendingIndexingTasks | quote }}
             {{- end }}
+            - name: PDF_SPLIT_ENABLED
+              value: {{ .Values.config.pdfSplitEnabled | quote }}
+            - name: PDF_SPLIT_MIN_PAGES
+              value: {{ .Values.config.pdfSplitMinPages | quote }}
+            - name: PDF_SPLIT_PART_PAGES
+              value: {{ .Values.config.pdfSplitPartPages | quote }}
+            - name: PDF_SPLIT_MAX_PART_BYTES
+              value: {{ .Values.config.pdfSplitMaxPartBytes | quote }}
+            - name: PDF_SPLIT_OVERLAP_PAGES
+              value: {{ .Values.config.pdfSplitOverlapPages | quote }}
+            - name: PDF_SPLIT_TIMEOUT_SECONDS
+              value: {{ .Values.config.pdfSplitTimeoutSeconds | quote }}
+            - name: PDF_SPLIT_ROLLBACK
+              value: {{ .Values.config.pdfSplitRollback | quote }}
+            - name: PDF_SPLIT_ROLLBACK_ORG
+              value: {{ .Values.config.pdfSplitRollbackOrg | quote }}
             {{- if ne (toString .Values.config.queryUvicornWorkers) "" }}
             - name: QUERY_UVICORN_WORKERS
               value: {{ .Values.config.queryUvicornWorkers | quote }}
