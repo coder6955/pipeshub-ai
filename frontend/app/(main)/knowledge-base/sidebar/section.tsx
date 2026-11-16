@@ -9,6 +9,7 @@ import {
   ELEMENT_HEIGHT,
   HOVER_BACKGROUND,
 } from '@/app/components/sidebar';
+import { splitFieldsOf } from '../utils/split-progress';
 import { appSectionKey } from '../utils/fetch-app-direct-children';
 
 export { appSectionKey };
@@ -55,6 +56,7 @@ export function convertToTreeNode(node: KnowledgeHubNode, depth: number = 0): En
     extension: node.extension,
     mimeType: node.mimeType,
     indexingStatus: node.indexingStatus,
+    ...splitFieldsOf(node),
   };
 }
 

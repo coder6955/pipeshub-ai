@@ -47,6 +47,7 @@ from app.exceptions.graph_db_exceptions import (
 )
 from app.models.entities import RecordType, substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
+from app.modules.indexing.file_split_display import SPLIT_FIELDS, stamp_rows
 from app.modules.retrieval.selection_scope import NamedNode
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.kh_cursor import (
@@ -116,6 +117,14 @@ def _embed_progress(doc: dict[str, Any]) -> dict[str, int | None]:
     if total < 1 or done < 0 or total > _MAX_SAFE_INTEGER or done > _MAX_SAFE_INTEGER:
         return none
     return {"embedDone": min(int(done), int(total)), "embedTotal": int(total)}
+
+
+def _split_progress(doc: dict[str, Any]) -> dict[str, Any]:
+    """The split roll-up stamped on a record row, or none: only the four known fields, only when all are well formed."""
+    fields = {k: doc.get(k) for k in SPLIT_FIELDS}
+    if all(v is None for v in fields.values()):
+        return {}
+    return fields
 
 
 def _start_type(parent_type: str | None) -> str:
@@ -895,6 +904,7 @@ class KnowledgeHubService:
             page_result = self._only_signed_cursors(page_result, await self._get_cursor_secret())
 
             await self._stamp_collection_roles(page_result.rows, user_key)
+            await self._stamp_split_display(page_result.rows)
             items = [self._doc_to_node_item(row) for row in page_result.rows]
             user_email = user.get('email')
             for item in items:
@@ -1270,6 +1280,7 @@ class KnowledgeHubService:
             })
         if user and user.get("_key"):
             await self._stamp_collection_roles(rows, user["_key"])
+        await self._stamp_split_display(rows)
         items = [self._doc_to_node_item(row) for row in rows]
         for item in items:
             if item.webUrl:
@@ -1338,6 +1349,7 @@ class KnowledgeHubService:
             indexingStatus=doc.get('indexingStatus'),
             reason=doc.get('reason'),
             **_embed_progress(doc),
+            **_split_progress(doc),
             createdAt=doc.get('createdAt', 0),
             updatedAt=doc.get('updatedAt', 0),
             sizeInBytes=doc.get('sizeInBytes'),
@@ -1352,6 +1364,12 @@ class KnowledgeHubService:
             isPlaceholder=bool(doc.get('isPlaceholder', False)),
         )
 
+
+    async def _stamp_split_display(self, rows: list[dict]) -> None:
+        """The roll-up of the split files among a page's record rows, in one batched read."""
+        await stamp_rows(
+            [r for r in rows if r.get('nodeType') == NodeType.RECORD.value], self.graph_provider, surface="knowledge_hub",
+        )
 
     async def _stamp_collection_roles(self, rows: list[dict], user_key: str) -> None:
         """The listing leaves userRole off everything below an App. Collection

@@ -1,4 +1,5 @@
 import type { RecordDetailsResponse, StageStateSummary } from '@/app/(main)/knowledge-base/types';
+import { splitDisplayStatus, splitProgressOf } from '@/app/(main)/knowledge-base/utils/split-progress';
 import { parsedStepStatus } from './parsed-step-status';
 
 export interface StageTrackStep {
@@ -29,7 +30,7 @@ function stageHint(state: StageStateSummary | undefined, t: Translate): string |
  * sends no `stageStates`) the step is hidden rather than shown as NOT_STARTED.
  */
 export function buildStageTrackSteps(
-  record: Pick<RecordDetailsResponse['record'], 'parsingStatus' | 'indexingStatus' | 'extractionStatus'>,
+  record: Pick<RecordDetailsResponse['record'], 'parsingStatus' | 'indexingStatus' | 'extractionStatus' | 'splitState' | 'splitDone' | 'splitTotal' | 'splitFailed'>,
   stageStates: StageStateSummary[] | null | undefined,
   t: Translate,
 ): StageTrackStep[] {
@@ -40,7 +41,12 @@ export function buildStageTrackSteps(
   const parsedStatus = parsedStepStatus(record.parsingStatus, record.indexingStatus);
   return [
     ...(parsedStatus ? [{ key: 'parsed', label: t('recordView.stageParsed'), status: parsedStatus }] : []),
-    { key: 'searchable', label: t('recordView.stageSearchable'), status: record.indexingStatus },
+    {
+      key: 'searchable',
+      label: t('recordView.stageSearchable'),
+      // The file itself is COMPLETED once its manifest is indexed; a split roll-up still running or failed decides here.
+      status: splitDisplayStatus(record.indexingStatus, splitProgressOf(record)),
+    },
     {
       key: 'classified',
       label: t('recordView.stageClassified'),

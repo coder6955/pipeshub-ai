@@ -1,7 +1,7 @@
 """Knowledge Base Request and Response Models"""
 
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -162,6 +162,10 @@ class RecordResponse(BaseModel):
     fileRecord: Optional[FileRecordResponse] = Field(None, description="Associated file record")
     folder: Optional[FolderResponse] = Field(None, description="Folder information")
     permission: Optional[PermissionContents] = Field(None, description="Permission information")
+    splitState: Literal["SPLITTING", "INDEXING_PARTS", "COMPLETED", "PARTIAL", "FAILED"] | None = Field(None, description="Roll-up of a file cut into parts for indexing; null for every other record. Read-only")
+    splitDone: int | None = Field(None, ge=0, description="Parts in a terminal status")
+    splitTotal: int | None = Field(None, ge=0, description="Parts in all")
+    splitFailed: int | None = Field(None, ge=0, description="Parts that failed")
 
 class KnowledgeBaseResponse(BaseModel):
     """Response model for knowledge base information"""

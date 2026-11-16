@@ -25,6 +25,7 @@ vi.mock('@/app/(main)/knowledge-base/api', () => ({
     })),
     streamRecord: vi.fn(async () => new Blob(['x'], { type: 'application/pdf' })),
     deleteRecord: vi.fn(async () => undefined),
+    reindexItem: vi.fn(async () => ({})),
   },
 }));
 
@@ -193,5 +194,127 @@ describe('RecordViewShell when the record cannot be read', () => {
 
     expect(env.back).toHaveBeenCalledOnce();
     env.inAppBack = false;
+  });
+});
+
+describe('RecordViewShell reindex action of a split file', () => {
+  const withSplit = async (fields: Record<string, unknown>) => {
+    env.mobile = false;
+    env.inAppBack = false;
+    const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+    vi.mocked(KnowledgeBaseApi.getRecordDetails).mockResolvedValueOnce({
+      record: { id: 'r1', recordName: 'Plan.pdf', recordType: 'FILE', mimeType: 'application/pdf', origin: 'UPLOAD', indexingStatus: 'COMPLETED', ...fields },
+      knowledgeBase: null,
+    } as never);
+    renderShell();
+    await screen.findByTestId('metadata');
+  };
+
+  it('is "Retry failed parts" when some parts failed', async () => {
+    await withSplit({ splitState: 'PARTIAL', splitDone: 4, splitTotal: 4, splitFailed: 1 });
+    expect(screen.getByRole('button', { name: 'Retry failed parts' })).toBeTruthy();
+  });
+
+  it('retries the failed parts on click, with no force-reindex confirmation', async () => {
+    const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+    vi.mocked(KnowledgeBaseApi.reindexItem).mockClear();
+    await withSplit({ splitState: 'PARTIAL', splitDone: 4, splitTotal: 4, splitFailed: 1 });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry failed parts' }));
+
+    await waitFor(() => expect(KnowledgeBaseApi.reindexItem).toHaveBeenCalledWith('r1'));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  it('is offered no reindex while the parts are still indexing', async () => {
+    await withSplit({ splitState: 'INDEXING_PARTS', splitDone: 1, splitTotal: 4 });
+    expect(screen.queryByRole('button', { name: /reindex|retry/i })).toBeNull();
+  });
+
+  it('is still Force reindex for a completed split file and for a file that is not split', async () => {
+    await withSplit({ splitState: 'COMPLETED', splitDone: 4, splitTotal: 4 });
+    expect(screen.getByRole('button', { name: 'Force reindex' })).toBeTruthy();
+    cleanup();
+    await withSplit({});
+    expect(screen.getByRole('button', { name: 'Force reindex' })).toBeTruthy();
+  });
+});
+
+describe('RecordViewShell refresh while the parts of a split file index', () => {
+  const rec = (fields: Record<string, unknown>) => ({
+    record: { id: 'r1', recordName: 'Plan.pdf', recordType: 'FILE', mimeType: 'application/pdf', origin: 'UPLOAD', indexingStatus: 'COMPLETED', ...fields },
+    knowledgeBase: null,
+  }) as never;
+
+  it('reads the record again until the roll-up is terminal, then shows "Retry failed parts" with no reload', async () => {
+    env.mobile = false;
+    env.inAppBack = false;
+    const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+    const { SPLIT_POLL_MS } = await import('../record-view-shell');
+    const get = vi.mocked(KnowledgeBaseApi.getRecordDetails);
+    get.mockClear();
+    get
+      .mockResolvedValueOnce(rec({ splitState: 'INDEXING_PARTS', splitDone: 1, splitTotal: 4 }))
+      .mockResolvedValueOnce(rec({ splitState: 'INDEXING_PARTS', splitDone: 3, splitTotal: 4 }))
+      .mockResolvedValueOnce(rec({ splitState: 'PARTIAL', splitDone: 4, splitTotal: 4, splitFailed: 1 }));
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderShell();
+      await screen.findByTestId('metadata');
+      expect(screen.queryByRole('button', { name: 'Retry failed parts' })).toBeNull();
+      expect(get).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(SPLIT_POLL_MS);
+      expect(get).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(SPLIT_POLL_MS);
+      expect(await screen.findByRole('button', { name: 'Retry failed parts' })).toBeTruthy();
+      expect(get).toHaveBeenCalledTimes(3);
+
+      // terminal: no further reads
+      await vi.advanceTimersByTimeAsync(SPLIT_POLL_MS * 3);
+      expect(get).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not poll a file that is not split, or one whose roll-up is already terminal', async () => {
+    env.mobile = false;
+    const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+    const { SPLIT_POLL_MS } = await import('../record-view-shell');
+    const get = vi.mocked(KnowledgeBaseApi.getRecordDetails);
+    get.mockClear();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderShell();
+      await screen.findByTestId('metadata');
+      await vi.advanceTimersByTimeAsync(SPLIT_POLL_MS * 3);
+      expect(get).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops reading when the page is left', async () => {
+    env.mobile = false;
+    const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+    const { SPLIT_POLL_MS } = await import('../record-view-shell');
+    const get = vi.mocked(KnowledgeBaseApi.getRecordDetails);
+    get.mockClear();
+    get.mockResolvedValue(rec({ splitState: 'INDEXING_PARTS', splitDone: 1, splitTotal: 4 }));
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { unmount } = renderShell();
+      await screen.findByTestId('metadata');
+      unmount();
+      await vi.advanceTimersByTimeAsync(SPLIT_POLL_MS * 3);
+      expect(get).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      get.mockReset();
+      get.mockImplementation((async () => ({
+        record: { id: 'r1', recordName: 'Plan.pdf', recordType: 'FILE', mimeType: 'application/pdf', origin: 'UPLOAD' },
+      })) as never);
+    }
   });
 });

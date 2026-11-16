@@ -1,6 +1,7 @@
 // Knowledge Base Types
 
 import type { FileType, ItemStatus, SourceType, SortOrder, ViewMode } from '@/types';
+import type { SplitFields, SplitState } from './utils/split-progress';
 
 // Re-export common types for convenience
 export type { FileType, ItemStatus, SourceType, SortOrder, ViewMode };
@@ -270,6 +271,11 @@ export interface KnowledgeHubNode {
   /** Chunks embedded so far and chunks needed; set only while an `IN_PROGRESS` record is embedding. */
   embedDone?: number | null;
   embedTotal?: number | null;
+  /** Roll-up of a large file indexed in pieces; absent for every other record. */
+  splitState?: SplitState | null;
+  splitDone?: number | null;
+  splitTotal?: number | null;
+  splitFailed?: number | null;
   sizeInBytes?: number | null;
   mimeType?: string | null;
   extension?: string | null;
@@ -416,7 +422,7 @@ export interface KnowledgeHubApiResponse {
 /**
  * Enhanced folder tree node for sidebar
  */
-export interface EnhancedFolderTreeNode extends FolderTreeNode {
+export interface EnhancedFolderTreeNode extends FolderTreeNode, SplitFields {
   nodeType: NodeType;
   /** Sidebar expand chevron — container children visible in the tree. */
   hasChildren: boolean;
@@ -600,6 +606,10 @@ export interface RecordDetailsResponse {
     virtualRecordId: string;
     lastExtractionTimestamp: number;
     parsingStatus?: IndexingStatus | null;
+    splitState?: SplitState | null;
+    splitDone?: number | null;
+    splitTotal?: number | null;
+    splitFailed?: number | null;
     fileRecord: {
       _key: string;
       _id: string;

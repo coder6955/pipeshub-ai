@@ -8,6 +8,7 @@ import { formatFileSize } from '@/app/components/file-preview/utils';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
+import { splitDisplayStatus, splitProgressOf, splitStatusLabel, type SplitProgress } from '@/app/(main)/knowledge-base/utils/split-progress';
 import { buildStageTrackSteps } from './stage-track-steps';
 import { indexingStatusHint } from './indexing-reason-hint';
 
@@ -128,6 +129,7 @@ const INDEXING_STATUS_KEYS: Record<string, string> = {
   ENABLE_MULTIMODAL_MODELS: 'kb.indexingStatus.needsMultimodalModel',
   SKIPPED: 'kb.indexingStatus.skipped',
   PASSWORD_PROTECTED: 'kb.indexingStatus.passwordProtected',
+  PARTLY_INDEXED: 'kb.indexingStatus.partlyIndexed',
 };
 
 /** The translated status, or an unknown one in sentence case ("SOME_STATE" → "Some state"). */
@@ -152,6 +154,7 @@ function indexingStatusColors(status: string | undefined): IndexingStatusColors 
       return { bg: 'var(--red-3)', text: 'var(--red-11)', border: 'var(--red-6)' };
     case 'FILE_TYPE_NOT_SUPPORTED':
     case 'PASSWORD_PROTECTED':
+    case 'PARTLY_INDEXED':
       return { bg: 'var(--orange-3)', text: 'var(--orange-11)', border: 'var(--orange-6)' };
     case 'AUTO_INDEX_OFF':
     case 'NOT_STARTED':
@@ -161,10 +164,11 @@ function indexingStatusColors(status: string | undefined): IndexingStatusColors 
   }
 }
 
-function IndexingStatusChip({ status }: { status: string | undefined }) {
+function IndexingStatusChip({ status, split = null }: { status: string | undefined; split?: SplitProgress | null }) {
   const { t } = useTranslation();
-  const label = humanizeIndexingStatus(status, t);
-  const { bg, text, border } = indexingStatusColors(status);
+  // A split file shows the roll-up of its parts in place of its own (manifest) status.
+  const label = splitStatusLabel(split, t) ?? humanizeIndexingStatus(status, t);
+  const { bg, text, border } = indexingStatusColors(splitDisplayStatus(status, split) ?? undefined);
   return (
     <Box
       style={{
@@ -563,7 +567,7 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
                   {t('recordView.labels.indexingStatus')}
                 </Text>
                 <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
-                  <IndexingStatusChip status={record.indexingStatus} />
+                  <IndexingStatusChip status={record.indexingStatus} split={splitProgressOf(record)} />
                   {statusHint ? (
                     <ReasonHintButton
                       content={statusHint.content}

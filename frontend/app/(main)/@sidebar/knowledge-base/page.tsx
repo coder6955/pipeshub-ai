@@ -13,6 +13,7 @@ import { openFolderChildren, reloadOpenFoldersUnder } from '../../knowledge-base
 import '../../knowledge-base/utils/sidebar-session';
 import { fetchAppDirectChildren } from '../../knowledge-base/utils/fetch-app-direct-children';
 import { buildNavUrl, getIsAllRecordsMode, pushKbUrl } from '../../knowledge-base/utils/nav';
+import { splitFieldsOf } from '../../knowledge-base/utils/split-progress';
 import { findNodeInCategorized } from '../../knowledge-base/utils/find-node';
 import { collectionNameError, folderNameError } from '../../knowledge-base/utils/name-rules';
 import { useTranslation } from 'react-i18next';
@@ -206,6 +207,7 @@ function KnowledgeBaseSidebarSlotContent() {
         hasChildren: hasChildren ?? node?.hasDescendants ?? node?.hasChildren,
         connector: node?.connector ?? appNode?.connector,
         subType: node?.subType ?? appNode?.subType,
+        ...splitFieldsOf(node),
       });
     },
     [setPendingSidebarAction]

@@ -16,6 +16,7 @@ import {
   getReindexNodeFromHubItem,
   mapReindexOptionsToMenuActions,
 } from '../../utils/reindex-label';
+import { splitFieldsOf } from '../../utils/split-progress';
 import { getTreeNodeDescendantsFlag } from '../../utils/tree-builder';
 import { renderTreeLines } from './tree-lines';
 import { ItemActionMenu } from '../../components/item-action-menu';
@@ -182,6 +183,7 @@ export function FolderTreeItem({
       indexingStatus: enhancedNode.indexingStatus,
       connector: enhancedNode.connector,
       subType: enhancedNode.subType,
+      ...splitFieldsOf(enhancedNode),
     }),
     !!onReindex && !!enhancedNode.nodeType && !hideLeafRecordReindex,
   );

@@ -8,6 +8,13 @@ import { FileIcon } from '@/app/components/ui/file-icon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { formatFileSize } from '@/app/components/file-preview/utils';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
+import {
+  PARTLY_INDEXED_STATUS,
+  splitDisplayStatus,
+  splitProgressOf,
+  splitStatusLabel,
+  type SplitProgress,
+} from '@/app/(main)/knowledge-base/utils/split-progress';
 import { KnowledgeHubApi, KnowledgeBaseApi } from '@/knowledge-base/api';
 import type { KnowledgeHubNode } from '@/knowledge-base/types';
 import { ProjectApi } from '@/chat/project-api';
@@ -23,6 +30,7 @@ const INDEX_STATUS_COLOR: Record<string, string> = {
   FAILED: 'var(--red-9)',
   FILE_TYPE_NOT_SUPPORTED: 'var(--red-9)',
   PASSWORD_PROTECTED: 'var(--amber-11)',
+  [PARTLY_INDEXED_STATUS]: 'var(--amber-11)',
 };
 
 const INDEX_STATUS_LABEL_KEY: Record<string, string> = {
@@ -50,9 +58,12 @@ interface FilesCardProps {
 }
 
 /** The file row's indexing icon, named for screen readers and explained on hover/focus. */
-function IndexStatusMark({ status }: { status: string }) {
+function IndexStatusMark({ status: storedStatus, split = null }: { status: string; split?: SplitProgress | null }) {
   const { t } = useTranslation();
-  const statusText = INDEX_STATUS_LABEL_KEY[status] ? t(INDEX_STATUS_LABEL_KEY[status]) : status;
+  // A split file shows the roll-up of its parts in place of its own (manifest) status.
+  const status = splitDisplayStatus(storedStatus, split) ?? storedStatus;
+  const statusText = splitStatusLabel(split, t)
+    ?? (INDEX_STATUS_LABEL_KEY[status] ? t(INDEX_STATUS_LABEL_KEY[status]) : status);
   const label = t('chat.projects.workspace.indexingStatusLabel', { status: statusText });
   return (
     <Tooltip content={label}>
@@ -63,7 +74,7 @@ function IndexStatusMark({ status }: { status: string }) {
         style={{ display: 'inline-flex', flexShrink: 0, lineHeight: 0 }}
       >
         <MaterialIcon
-          name={getIndexStatusIcon(status)}
+          name={status === PARTLY_INDEXED_STATUS ? 'warning_amber' : getIndexStatusIcon(status)}
           size={14}
           color={INDEX_STATUS_COLOR[status] ?? 'var(--slate-10)'}
         />
@@ -245,7 +256,7 @@ export function FilesCard({
                   {item.name}
                 </Text>
                 {item.indexingStatus && (
-                  <IndexStatusMark status={item.indexingStatus} />
+                  <IndexStatusMark status={item.indexingStatus} split={splitProgressOf(item)} />
                 )}
                 {typeof item.sizeInBytes === 'number' && (
                   <Text size="1" style={{ color: 'var(--slate-10)', flexShrink: 0 }}>

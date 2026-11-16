@@ -1,3 +1,4 @@
+import { splitFieldsOf } from './split-progress';
 import type {
   KnowledgeHubNode,
   EnhancedFolderTreeNode,
@@ -42,6 +43,7 @@ export function nodeToTreeNode(
     extension: node.extension,
     mimeType: node.mimeType,
     indexingStatus: node.indexingStatus,
+    ...splitFieldsOf(node),
   };
 }
 

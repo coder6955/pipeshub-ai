@@ -9,6 +9,7 @@
 
 import { FOLDER_REINDEX_DEPTH, REINDEX_SELF_DEPTH } from '../constants';
 import { isKbCollectionsHubApp } from './all-records-transformer';
+import { isSplitRetryable, isSplitRunning, splitProgressOf, type SplitFields } from './split-progress';
 
 export type ReindexAction =
   | 'force-reindex'
@@ -17,7 +18,7 @@ export type ReindexAction =
   | 'reindex'
   | 'unsupported';
 
-export interface ReindexNode {
+export interface ReindexNode extends SplitFields {
   nodeType?: string;
   indexingStatus?: string | null;
   hasChildren?: boolean;
@@ -32,7 +33,8 @@ export type ReindexMenuLabelKey =
   | 'menu.reindexFailed'
   | 'menu.forceReindexing'
   | 'menu.retryIndexing'
-  | 'menu.reindex';
+  | 'menu.reindex'
+  | 'menu.retryFailedParts';
 
 export type ReindexMenuOption = {
   icon: string;
@@ -49,6 +51,7 @@ const LABEL_FALLBACKS: Record<ReindexMenuLabelKey, string> = {
   'menu.forceReindexing': 'Force reindex',
   'menu.retryIndexing': 'Retry indexing',
   'menu.reindex': 'Reindex',
+  'menu.retryFailedParts': 'Retry failed parts',
 };
 
 /** Resolve menu label with English fallback when i18n key is missing. */
@@ -67,8 +70,12 @@ export function getReindexNodeFromHubItem(item: {
   hasChildren?: boolean;
   connector?: string;
   subType?: string;
-}): ReindexNode {
+} & SplitFields): ReindexNode {
   return {
+    splitState: item.splitState,
+    splitDone: item.splitDone,
+    splitTotal: item.splitTotal,
+    splitFailed: item.splitFailed,
     nodeType: item.nodeType,
     indexingStatus: item.indexingStatus,
     hasChildren: item.hasChildren,
@@ -163,6 +170,14 @@ export function supportsBulkReindex(node: ReindexNode): boolean {
     || node.nodeType === 'recordGroup'
     || node.nodeType === 'record'
   );
+}
+
+/** A split file whose parts failed is retried part-wise, never force-reindexed; one still running has no action. */
+function splitLeafAction(node: ReindexNode): ReindexAction | null {
+  const progress = splitProgressOf(node);
+  if (isSplitRetryable(progress)) return 'retry-indexing';
+  if (isSplitRunning(progress)) return 'unsupported';
+  return null;
 }
 
 function leafActionFromStatus(indexingStatus?: string | null): ReindexAction {
@@ -306,6 +321,10 @@ export function getReindexToastKind(
 
 /** Determine the reindex action for legacy guards. */
 export function getReindexAction(node: ReindexNode): ReindexAction {
+  if (!supportsBulkReindex(node)) {
+    const split = splitLeafAction(node);
+    if (split) return split;
+  }
   if (needsReindexScopeModal(node)) {
     return leafActionFromStatus(node.indexingStatus);
   }
@@ -330,6 +349,7 @@ export function requiresForceReindexConfirmation(
 
 /** Human-readable label for the menu item / button. */
 export function getReindexLabel(node: ReindexNode): string {
+  if (!supportsBulkReindex(node) && isSplitRetryable(splitProgressOf(node))) return 'Retry failed parts';
   switch (getReindexAction(node)) {
     case 'force-reindex':
       return 'Force reindex';
@@ -366,6 +386,7 @@ export function isReindexDisabled(node: ReindexNode): boolean {
 export function canShowReindexMenu(node: ReindexNode): boolean {
   if (node.nodeType === 'app' && !isKbCollectionNode(node)) return false;
   if (node.indexingStatus === 'IN_PROGRESS') return false;
+  if (!supportsBulkReindex(node) && isSplitRunning(splitProgressOf(node))) return false;
   if (isQueuedLeaf(node)) return false;
   const isEmptyContainer =
     (node.nodeType === 'folder' || node.nodeType === 'recordGroup')
@@ -398,12 +419,12 @@ export function getReindexMenuOptions(node: ReindexNode): ReindexMenuOption[] {
   }
 
   if (!supportsBulkReindex(node)) {
-    const action = leafActionFromStatus(node.indexingStatus);
+    const action = splitLeafAction(node) ?? leafActionFromStatus(node.indexingStatus);
     if (action === 'unsupported') return [];
 
     return [{
       icon: iconForAction(action),
-      labelKey: leafReindexLabelKey(action),
+      labelKey: isSplitRetryable(splitProgressOf(node)) ? 'menu.retryFailedParts' : leafReindexLabelKey(action),
       disabled: false,
     }];
   }
@@ -412,7 +433,7 @@ export function getReindexMenuOptions(node: ReindexNode): ReindexMenuOption[] {
 }
 
 export function getReindexNodeForTableItem(
-  item: { nodeType?: string; indexingStatus?: string | null; hasChildren?: boolean },
+  item: { nodeType?: string; indexingStatus?: string | null; hasChildren?: boolean } & SplitFields,
   isHubNode: boolean,
 ): ReindexNode {
   if (!isHubNode) return {};

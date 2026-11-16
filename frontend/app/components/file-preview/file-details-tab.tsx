@@ -6,6 +6,7 @@ import { Flex, Text, Box } from '@radix-ui/themes';
 import { formatDate } from '@/lib/utils/formatters';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
+import { splitProgressOf, splitStatusLabel } from '@/app/(main)/knowledge-base/utils/split-progress';
 
 interface FileDetailsTabProps {
   recordDetails: RecordDetailsResponse | null;
@@ -169,7 +170,7 @@ export function FileDetailsTab({ recordDetails }: FileDetailsTabProps) {
           <DetailRow label={t('recordView.labels.recordId')} value={record.id} />
           <DetailRow label={t('recordView.labels.recordType')} value={t(`recordView.labels.recordTypes.${record.recordType}`, { defaultValue: record.recordType })} />
           <DetailRow label={t('recordView.labels.origin')} value={record.origin} />
-          <DetailRow label={t('recordView.labels.indexingStatus')} value={record.indexingStatus} />
+          <DetailRow label={t('recordView.labels.indexingStatus')} value={splitStatusLabel(splitProgressOf(record), t) ?? record.indexingStatus} />
           <DetailRow label={t('recordView.labels.version')} value={record.version?.toString()} />
           <DetailRow label={t('recordView.labels.createdAt')} value={createdDate} />
           <DetailRow label={t('recordView.labels.updatedAt')} value={updatedDate} />

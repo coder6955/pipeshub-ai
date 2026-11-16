@@ -1447,6 +1447,32 @@ describe('Knowledge base page — working with files', () => {
   });
 });
 
+describe('Knowledge base page — a file indexed in parts', () => {
+  const split = (fields: Record<string, unknown>) =>
+    hubNode({
+      id: 'rec-big', name: 'big.pdf', nodeType: 'record', parentId: 'kb-eng', mimeType: 'application/pdf',
+      extension: 'pdf', indexingStatus: 'COMPLETED', ...fields,
+    });
+
+  it('retries its failed parts from the row menu without the force-reindex confirmation', async () => {
+    await openEngineering([DESIGNS, split({ splitState: 'PARTIAL', splitDone: 4, splitTotal: 4, splitFailed: 1 })]);
+    api.kb.reindexItem.mockResolvedValue({});
+
+    await chooseRowAction('big.pdf', 'Retry failed parts');
+
+    await waitFor(() => expect(api.kb.reindexItem).toHaveBeenCalledWith('rec-big', 0, undefined));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  it('offers no reindex action in its row menu while its parts are still indexing', async () => {
+    await openEngineering([DESIGNS, split({ splitState: 'INDEXING_PARTS', splitDone: 1, splitTotal: 4 })]);
+
+    const menu = await openRowMenu('big.pdf');
+
+    expect(within(menu).queryByRole('menuitem', { name: /reindex|retry/i })).toBeNull();
+  });
+});
+
 describe('Knowledge base page — selecting several items', () => {
   async function selectSpecAndNotes() {
     await openEngineering();

@@ -100,6 +100,7 @@ import {
   isRecordReindexBlocked,
 } from './utils/reindex-label';
 import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
+import { splitFieldsOf } from './utils/split-progress';
 import type { ReindexMenuLabelKey } from './utils/reindex-label';
 import { fetchAppDirectChildren } from './utils/fetch-app-direct-children';
 import {
@@ -2585,6 +2586,10 @@ function KnowledgeBasePageContent() {
         hasChildren: hubItem.hasChildren,
         connector: hubItem.connector,
         subType: hubItem.subType,
+        splitState: hubItem.splitState,
+        splitDone: hubItem.splitDone,
+        splitTotal: hubItem.splitTotal,
+        splitFailed: hubItem.splitFailed,
       });
 
       const toastId = toast.loading(getReindexLoadingTitle(reindexNode, depth, statusFilters), {
@@ -2643,6 +2648,10 @@ function KnowledgeBasePageContent() {
         hasChildren: hubItem.hasChildren,
         connector: hubItem.connector,
         subType: hubItem.subType,
+        splitState: hubItem.splitState,
+        splitDone: hubItem.splitDone,
+        splitTotal: hubItem.splitTotal,
+        splitFailed: hubItem.splitFailed,
       });
 
       if (statusFilters?.length) {
@@ -2676,6 +2685,10 @@ function KnowledgeBasePageContent() {
         hasChildren: hubItem.hasChildren,
         connector: hubItem.connector,
         subType: hubItem.subType,
+        splitState: hubItem.splitState,
+        splitDone: hubItem.splitDone,
+        splitTotal: hubItem.splitTotal,
+        splitFailed: hubItem.splitFailed,
       });
 
       if (isRecordReindexBlocked(reindexNode)) {
@@ -2713,6 +2726,7 @@ function KnowledgeBasePageContent() {
         hasChildren,
         connector,
         subType,
+        ...split
       } = pendingSidebarAction;
       if (type === 'reindex') {
         void handleReindexClick(
@@ -2724,6 +2738,7 @@ function KnowledgeBasePageContent() {
             hasChildren,
             connector,
             subType,
+            ...splitFieldsOf(split),
           } as KnowledgeHubNode,
           statusFilters,
         );

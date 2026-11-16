@@ -26,6 +26,7 @@ import {
   isRecordReindexBlocked,
   requiresForceReindexConfirmation,
 } from '@/app/(main)/knowledge-base/utils/reindex-label';
+import { isSplitRetryable, isSplitRunning, splitFieldsOf, splitProgressOf } from '@/app/(main)/knowledge-base/utils/split-progress';
 import { toast } from '@/lib/store/toast-store';
 import { NoAccessPage } from '@/app/components/feedback';
 import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
@@ -75,6 +76,10 @@ function recordTypeIcon(recordType: string): string {
   }
 }
 
+/** How often the record is read again while its parts index, and how many more reads follow a retry. */
+export const SPLIT_POLL_MS = 15_000;
+const POLLS_AFTER_RETRY = 4;
+
 export function RecordViewShell({ recordId }: RecordViewShellProps) {
   const { t } = useTranslation();
   const router = useRouter();
@@ -106,6 +111,9 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
   const [isReindexing, setIsReindexing] = useState(false);
   const [isReindexBlockedOpen, setIsReindexBlockedOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Reads left after a retry: the roll-up moves to INDEXING_PARTS a moment after the request is accepted.
+  const [pollsAfterRetry, setPollsAfterRetry] = useState(0);
 
   const blobUrlRef = useRef<string | null>(null);
 
@@ -251,6 +259,30 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
 
   useEffect(() => () => revokeBlobUrl(), [revokeBlobUrl]);
 
+  // A split file's parts finish on their own, so read the record again while they run (and for a few
+  // reads after a retry). Each read re-arms the next one; a terminal state or unmount stops it.
+  const splitRunning = isSplitRunning(splitProgressOf(recordDetails?.record ?? {}));
+  useEffect(() => {
+    if (!recordDetails || (!splitRunning && pollsAfterRetry === 0)) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const fresh = await KnowledgeBaseApi.getRecordDetails(recordId, { suppressErrorToast: () => true });
+        if (cancelled) return;
+        setRecordDetails(fresh);
+      } catch {
+        // A failed read keeps the last details; the next tick tries again.
+        if (cancelled) return;
+        setRecordDetails((current) => (current ? { ...current } : current));
+      }
+      if (!cancelled) setPollsAfterRetry((n) => Math.max(0, n - 1));
+    }, SPLIT_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [recordDetails, splitRunning, pollsAfterRetry, recordId]);
+
   useEffect(() => {
     const onFs = () => setIsFs(Boolean(document.fullscreenElement));
     document.addEventListener('fullscreenchange', onFs);
@@ -340,6 +372,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
       indexingStatus,
       hasChildren: false,
       connector: recordDetails?.record?.connectorName,
+      ...splitFieldsOf(recordDetails?.record),
     });
     if (isRecordReindexBlocked(reindexNode)) {
       setIsReindexBlockedOpen(true);
@@ -363,6 +396,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
       });
       const updated = await KnowledgeBaseApi.getRecordDetails(recordId);
       setRecordDetails(updated);
+      setPollsAfterRetry(POLLS_AFTER_RETRY);
     } catch {
       // error already shown via toast
     } finally {
@@ -391,7 +425,10 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
 
   const indexingStatus = recordDetails?.record?.indexingStatus;
 
+  const splitProgress = splitProgressOf(recordDetails?.record ?? {});
+
   const getReindexButtonLabel = (status: string | undefined): string => {
+    if (isSplitRetryable(splitProgress)) return t('recordView.retryFailedParts');
     switch (status) {
       case 'COMPLETED':
         return t('recordView.forceReindex', { defaultValue: 'Force reindex' });
@@ -411,6 +448,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
       nodeType: 'record',
       indexingStatus,
       hasChildren: false,
+      ...splitFieldsOf(recordDetails?.record),
     }),
   );
 

@@ -28,6 +28,7 @@ import { ProgressiveBlur } from '@/app/components/ui/progressive-blur';
 import { rowRevealDelay, rowRevealEndMs } from '../utils/row-reveal';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
 import { isRateLimitPause } from '@/lib/utils/rate-limit-pause';
+import { PARTLY_INDEXED_STATUS, splitDisplayStatus, splitProgressOf, splitStatusLabel } from '../utils/split-progress';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 import {
   canDeleteKbTableItem,
@@ -92,6 +93,9 @@ export function getKbItemStatusLabel(item: TableItem, t: TFunction, withReason =
     if (item.indexingStatus == null) {
       return '';
     }
+    // A split file shows the roll-up of its parts; once it completed the normal label applies.
+    const splitLabel = splitStatusLabel(splitProgressOf(item), t, withReason);
+    if (splitLabel !== null) return splitLabel;
     let baseLabel: string;
     let showReason = true;
     switch (item.indexingStatus) {
@@ -152,13 +156,16 @@ export function getKbItemStatusIcon(item: TableItem, isFolder: boolean): ReactNo
     if (item.indexingStatus == null) {
       return null;
     }
-    switch (item.indexingStatus) {
+    const shown = splitDisplayStatus(item.indexingStatus, splitProgressOf(item)) ?? item.indexingStatus;
+    switch (shown) {
       case 'COMPLETED':
-        return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--emerald-11)" />;
+        return <MaterialIcon name={getIndexStatusIcon(shown)} size={16} color="var(--emerald-11)" />;
       case 'IN_PROGRESS':
         return <LapTimerIcon size={20} color="var(--amber-9)" />;
       case 'FAILED':
-        return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;
+        return <MaterialIcon name={getIndexStatusIcon(shown)} size={16} color="var(--red-9)" />;
+      case PARTLY_INDEXED_STATUS:
+        return <MaterialIcon name="warning_amber" size={16} color="var(--amber-11)" />;
       case 'FILE_TYPE_NOT_SUPPORTED':
         return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;
       case 'NOT_STARTED':

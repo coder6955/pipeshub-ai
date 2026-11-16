@@ -5,6 +5,7 @@ import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import { enableMapSet } from 'immer';
 import { categorizeNode, mergeChildrenIntoTree } from './utils/tree-builder';
+import type { SplitFields } from './utils/split-progress';
 import type { SidebarNodeChildrenPaginationMeta } from './utils/sidebar-child-pagination-meta';
 
 /**
@@ -158,7 +159,7 @@ interface KnowledgeBaseState {
         hasChildren?: boolean;
         connector?: string;
         subType?: string;
-      }
+      } & SplitFields
     | { type: 'create-collection' }
     | null;
 
@@ -322,7 +323,7 @@ interface KnowledgeBaseActions {
           hasChildren?: boolean;
           connector?: string;
           subType?: string;
-        }
+        } & SplitFields
       | { type: 'create-collection' }
       | null
   ) => void;

@@ -1,7 +1,7 @@
 """Knowledge Hub Unified Browse API Request and Response Models"""
 
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -86,6 +86,10 @@ class NodeItem(BaseModel):
     reason: Optional[str] = Field(None, description="Reason for current indexing status (e.g. failure reason)")
     embedDone: Optional[int] = Field(None, description="Vector points written so far (one per chunk or image); set only while indexingStatus is IN_PROGRESS and the record is embedding")
     embedTotal: Optional[int] = Field(None, description="Distinct vector points the record needs (one per chunk or image); set only while indexingStatus is IN_PROGRESS and the record is embedding")
+    splitState: Literal["SPLITTING", "INDEXING_PARTS", "COMPLETED", "PARTIAL", "FAILED"] | None = Field(None, description="Roll-up of a file that was cut into parts for indexing; null for every other node. Read-only")
+    splitDone: int | None = Field(None, ge=0, description="Parts in a terminal status; set with splitState")
+    splitTotal: int | None = Field(None, ge=0, description="Parts in all; set with splitState")
+    splitFailed: int | None = Field(None, ge=0, description="Parts that failed; set with splitState")
     createdAt: int = Field(..., description="Creation timestamp (epoch ms)")
     updatedAt: int = Field(..., description="Update timestamp (epoch ms)")
     sizeInBytes: Optional[int] = Field(None, description="File size in bytes (only for file records)")
