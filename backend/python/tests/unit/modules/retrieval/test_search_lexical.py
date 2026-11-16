@@ -288,3 +288,33 @@ class TestStoreSize:
         svc.collection_registry.resolve_for_query = AsyncMock(return_value=["col-1", "col-2"])
 
         assert await svc.lexical_store_chunks("o1", "u1") is None
+
+
+class TestStaleGenerations:
+    """A hit of a split file's old generation never reaches a lexical answer."""
+
+    @staticmethod
+    def _split_point(text: str, gen: str) -> SearchResult:
+        return SearchResult(
+            id=f"p-{text}", score=1.0,
+            payload={"page_content": text, "metadata": {
+                "virtualRecordId": "vr-mine", "orgId": "o1", "blockIndex": 0,
+                "segmentVirtualRecordId": "vr-part-1", "segmentIndex": 1, "splitGen": gen,
+            }},
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_hit_of_the_old_generation_is_dropped_and_the_live_one_keeps_its_part(self) -> None:
+        from tests.unit.modules.retrieval.split_fakes import (
+            FakeResolver,
+        )
+
+        batch = [self._split_point("old text", "gen-old"), self._split_point("live text", "gen-live")]
+        db = _vector_db(sparse=False, text=True, batches=[batch])
+        svc = _service(db, _graph(), containers_on=False)
+        svc.split_resolver_factory = lambda: FakeResolver(live={"vr-mine": "gen-live"})
+
+        result = await svc.search_lexical(["text"], "u1", "o1")
+
+        (hit,) = result.hits[0]
+        assert (hit.text, hit.virtual_record_id) == ("live text", "vr-mine")

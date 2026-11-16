@@ -50,6 +50,7 @@ from app.modules.retrieval.filter_schema import (
     TAXONOMY_FILTER_KEYS,
     validate_request_filters,
 )
+from app.modules.retrieval.hit_shape import public_hit, public_results
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.retrieval.selection_scope import (
     limits_rows,
@@ -695,7 +696,7 @@ async def search(
                     "search_type": "timeline" if timeline else "search",
                 })
 
-                return JSONResponse(status_code=custom_status_code, content=results)
+                return JSONResponse(status_code=custom_status_code, content=public_results(results))
 
     except HTTPException:
         raise
@@ -741,7 +742,8 @@ def _retrieve_chunks(results: dict[str, Any], max_per_record: int | None) -> lis
         results.get("searchResults") or [],
         key=lambda h: (-(h.get("score") or 0.0), h.get("distanceFromMatch") or 0),
     )
-    for hit in hits:
+    for raw_hit in hits:
+        hit = public_hit(raw_hit)
         md = hit.get("metadata") or {}
         record_id = md.get("recordId")
         if not record_id or not hit.get("content"):

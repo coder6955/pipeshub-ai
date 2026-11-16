@@ -268,6 +268,52 @@ class TestRecordMode:
         first, zero, later = (call.kwargs["parse_now"] for call in fetch.await_args_list)
         assert first is not None and zero is not None and later is None
 
+    async def test_a_block_address_is_not_a_start_block_of_a_split_file(self) -> None:
+        from tests.unit.modules.retrieval.split_fakes import (
+            FakeResolver,
+            V,
+        )
+
+        request, graph, _ = _request()
+        graph.get_document = AsyncMock(return_value={"connectorId": "c-1", "virtualRecordId": V})
+        fetch = AsyncMock()
+
+        with patch.object(route, "_fetch_multiple_records_impl", fetch), \
+             patch.object(route, "default_resolver", lambda _g: FakeResolver()), pytest.raises(HTTPException) as err:
+            await _read(request, start_block=2**20 + 5)
+
+        assert err.value.status_code == 422
+        fetch.assert_not_awaited()
+
+    async def test_a_record_that_is_not_split_is_paged_as_it_always_was_past_2_pow_20_blocks(self) -> None:
+        from tests.unit.modules.retrieval.split_fakes import (
+            FakeResolver,
+        )
+
+        request, graph, _ = _request()
+        graph.get_document = AsyncMock(return_value={"connectorId": "c-1", "virtualRecordId": "plain"})
+        fetch = AsyncMock(return_value={"ok": False, "not_indexed_records": {}})
+
+        with patch.object(route, "_fetch_multiple_records_impl", fetch), \
+             patch.object(route, "default_resolver", lambda _g: FakeResolver()):
+            await _read(request, start_block=2**20 + 5)
+
+        fetch.assert_awaited_once()
+
+    async def test_when_the_split_state_cannot_be_read_a_block_address_is_refused(self) -> None:
+        from tests.unit.modules.retrieval.split_fakes import (
+            FakeResolver,
+            V,
+        )
+
+        request, graph, _ = _request()
+        graph.get_document = AsyncMock(return_value={"connectorId": "c-1", "virtualRecordId": V})
+
+        with patch.object(route, "default_resolver", lambda _g: FakeResolver(fail=True)), pytest.raises(HTTPException) as err:
+            await _read(request, start_block=2**20 + 5)
+
+        assert err.value.status_code == 503
+
     async def test_no_access_starts_no_parse(self) -> None:
         request, _, _ = _request(access=False)
         fetch = AsyncMock()

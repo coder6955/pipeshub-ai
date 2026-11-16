@@ -16,6 +16,7 @@ from app.modules.retrieval.context.units import (
     takes_neighbours,
     unit_block_indices,
 )
+from app.modules.retrieval.hit_shape import carry_part
 from app.utils.chat_helpers import get_enhanced_metadata
 
 
@@ -60,6 +61,7 @@ def expand_neighbours(
                 continue
             neighbour = _text_neighbour(record, vrid, index)
             if neighbour is not None:
+                carry_part(unit, neighbour)
                 neighbour[NEIGHBOUR_OF_KEY] = [anchor]
                 added[key] = neighbour
     return [*units, *added.values()]
@@ -68,13 +70,18 @@ def expand_neighbours(
 def _text_neighbour(record: object, vrid: str, index: int) -> Unit | None:
     if not isinstance(record, dict) or index < 0:
         return None
-    blocks = (record.get("block_containers") or {}).get("blocks") or []
-    if index >= len(blocks) or not isinstance(blocks[index], dict):
+    containers = record.get("block_containers") or {}
+    blocks = containers.get("blocks") or []
+    if index >= len(blocks):
+        block = _trailing_block(containers, index - len(blocks))
+        trailing = block is not None
+    else:
+        block, trailing = blocks[index], False
+    if not isinstance(block, dict):
         return None
-    block = blocks[index]
     if block.get("type") != BlockType.TEXT.value:
         return None
-    return {
+    unit: Unit = {
         "content": block.get("data", ""),
         "block_type": BlockType.TEXT.value,
         "metadata": get_enhanced_metadata(record, block, {}),
@@ -82,3 +89,19 @@ def _text_neighbour(record: object, vrid: str, index: int) -> Unit | None:
         "block_index": index,
         "citationType": "vectordb|document",
     }
+    if trailing:
+        unit[TRAILING_CONTEXT_KEY] = True
+    return unit
+
+
+# Blocks that follow a part's last block in the file (the start of the next part), stored beside the part's
+# own blocks. A neighbour past the last block reads them; a record without the field behaves as before.
+TRAILING_CONTEXT_FIELD = "trailing_context"
+TRAILING_CONTEXT_KEY = "trailing_context"
+
+
+def _trailing_block(containers: dict[str, Any], offset: int) -> object:
+    trailing = containers.get(TRAILING_CONTEXT_FIELD)
+    if not isinstance(trailing, list) or not 0 <= offset < len(trailing):
+        return None
+    return trailing[offset]

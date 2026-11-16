@@ -32,11 +32,17 @@ from app.models.entities import substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.modules.pipeline.first_use import classify_on_first_use_later
 from app.modules.retrieval import degraded_notice
-from app.services.permissions import access_status
 from app.modules.retrieval.entity_filters import (
     TOO_BROAD_MESSAGE,
     EntityFilterResolver,
     EntityFilterUnavailableError,
+)
+from app.modules.retrieval.generation_check import drop_stale_generations
+from app.modules.retrieval.hit_shape import (
+    BlockAddressError,
+    content_vrid,
+    hit_from_point,
+    segment_index_of,
 )
 from app.modules.retrieval.lexical_search import (
     LexicalHit,
@@ -51,10 +57,11 @@ from app.modules.retrieval.record_cut import (
     passages_per_record,
     point_record_id,
 )
-from app.modules.retrieval.source_diversity import (
-    SourceDiversity,
-    active_source_diversity,
-    record_source,
+from app.modules.retrieval.result_merging import (
+    CollectionResults,
+    ResultMerger,
+    merge_collection_results,
+    merger_for,
 )
 from app.modules.retrieval.selection_scope import (
     SELECTION_EMPTY_MESSAGE,
@@ -68,12 +75,12 @@ from app.modules.retrieval.selection_scope import (
     require_membership_ready,
     resolve_request_scopes,
 )
-from app.modules.retrieval.result_merging import (
-    CollectionResults,
-    ResultMerger,
-    merge_collection_results,
-    merger_for,
+from app.modules.retrieval.source_diversity import (
+    SourceDiversity,
+    active_source_diversity,
+    record_source,
 )
+from app.modules.retrieval.split_content import SplitContentResolver, default_resolver
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import (
     ALLOWED_FILTER_KEYS,
@@ -88,6 +95,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 from app.services.model_identity.call_context import narrow_workload
 from app.services.model_identity.workload import Workload
+from app.services.permissions import access_status
 from app.services.permissions.metrics import SERVING_DEGRADED
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.const.const import (
@@ -108,6 +116,7 @@ from app.services.vector_db.search_retry import (
 from app.services.vector_db.sparse_embeddings import SparseEmbedder
 from app.services.vector_db.strategy import ContextAxis, QueryContext
 from app.sources.client.http.exception.exception import VectorDBEmptyError
+from app.telemetry.modules.split_metrics import BAD_BLOCK_ADDRESS_POINTS
 from app.utils.aimodels import (
     embedding_config_hash,
     get_default_embedding_model,
@@ -754,6 +763,15 @@ class RetrievalService:
             return sparse
         raise ValueError("Cannot convert sparse embedding to Qdrant SparseVector")
 
+    # Tests inject their own; None reads the file's split state through the graph provider.
+    split_resolver_factory: Callable[[], SplitContentResolver] | None = None
+
+    def _new_split_resolver(self) -> SplitContentResolver:
+        """One resolver per search: its reads are cached for the request."""
+        if self.split_resolver_factory is not None:
+            return self.split_resolver_factory()
+        return default_resolver(self.graph_provider)
+
     def _format_results(self, results: list[tuple]) -> list[dict[str, Any]]:
         """Format search results into a consistent structure with flattened metadata."""
         formatted_results = []
@@ -1132,6 +1150,11 @@ class RetrievalService:
                 for vid, record_id in candidate_map.items():
                     accessible_virtual_id_to_record_id.setdefault(vid, record_id)
 
+            split_resolver = self._new_split_resolver()
+            search_results = await drop_stale_generations(search_results, split_resolver)
+            if not search_results:
+                return empty("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
+
             self.logger.debug(f"Search results count: {len(search_results) if search_results else 0}")
 
             self.logger.debug("Extracting virtualRecordIds from search results")
@@ -1274,10 +1297,20 @@ class RetrievalService:
                                 # Fetch the record once, but flatten every hit on it:
                                 # a later hit left raw was neither expanded nor known
                                 # as a match, and could repeat a passage already shown.
-                                if virtual_id not in virtual_record_id_to_record:
+                                content_key = content_vrid(result)
+                                if content_key not in virtual_record_id_to_record:
                                     with span("content"):
-                                        await get_record(virtual_id, virtual_record_id_to_record, self.blob_store, org_id, virtual_to_record_map)
-                                if virtual_record_id_to_record[virtual_id] is None:
+                                        # The part's own arguments only for a part: a file read is the call it always was.
+                                        part_args = (
+                                            {"identity_vrid": virtual_id, "segment_index": segment_index_of(result),
+                                             "split_resolver": split_resolver}
+                                            if content_key != virtual_id else {}
+                                        )
+                                        await get_record(
+                                            content_key, virtual_record_id_to_record, self.blob_store, org_id,
+                                            virtual_to_record_map, **part_args,
+                                        )
+                                if virtual_record_id_to_record[content_key] is None:
                                     continue
                                 new_type_results.append(result)
                                 continue
@@ -1467,7 +1500,7 @@ class RetrievalService:
             if new_type_results:
                 is_multimodal_llm = False   #doesn't matter for retrieval service
                 with span("content"):
-                    flattened_results = await get_flattened_results(new_type_results, self.blob_store, org_id, is_multimodal_llm, virtual_record_id_to_record, from_retrieval_service=True)
+                    flattened_results = await get_flattened_results(new_type_results, self.blob_store, org_id, is_multimodal_llm, virtual_record_id_to_record, from_retrieval_service=True, split_resolver=split_resolver)
                 for result in flattened_results:
                     block_type = result.get("block_type")
                     child_results = group_child_results(result)
@@ -2440,10 +2473,19 @@ class RetrievalService:
                 scope_connector_ids=requested_scope_ids(filters), scopes=scopes,
             )
 
+        live_points = {
+            id(h["point"]) for h in await drop_stale_generations(
+                [{"metadata": p.payload.get("metadata") or {}, "point": p} for batch in batches for p in batch],
+                self._new_split_resolver(),
+            )
+        }
         hits: list[list[LexicalHit]] = []
         for batch in batches:
             admitted: list[LexicalHit] = []
             for point in batch:
+                if id(point) not in live_points:
+                    continue
+                # ``virtual_record_id`` is the file: its parts' text groups as one record.
                 vid = (point.payload.get("metadata") or {}).get("virtualRecordId")
                 if vid in accessible:
                     admitted.append(LexicalHit(
@@ -2857,7 +2899,14 @@ class RetrievalService:
                 if point.id in seen_points:
                     continue
                 seen_points.add(point.id)
-                metadata = point.payload.get("metadata") or {}
+                try:
+                    metadata = hit_from_point(point.payload.get("metadata") or {})
+                except BlockAddressError:
+                    # One malformed part point (a block that has no address) is dropped and counted;
+                    # it must not fail the search for every hit around it.
+                    BAD_BLOCK_ADDRESS_POINTS.inc()
+                    self.logger.warning("Dropped a search point with no block address (point %s)", point.id)
+                    continue
                 metadata["point_id"] = point.id
                 doc = Document(
                     page_content=point.payload.get("page_content", ""),

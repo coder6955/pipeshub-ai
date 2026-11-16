@@ -3395,3 +3395,73 @@ async def test_retrieval_embeds_instructed_query_only_for_bge(retrieval_service,
         retrieval_service._cached_embedding_is_local = True
         await retrieval_service._execute_parallel_searches(["hi"], None, 5, "org")
         emb.aembed_query.assert_awaited_once_with(expected)
+
+
+class TestMalformedPartPoint:
+    @pytest.mark.asyncio
+    async def test_a_part_point_with_no_block_address_is_dropped_and_counted_not_fatal(
+        self, retrieval_service: object, mock_graph_provider: object, mock_vector_db_service: object,
+    ) -> None:
+        """through the real _run_searches, one point whose block has no address (a block past the
+        2^20 local range of its part) is dropped and counted; the search still returns the other hits."""
+        from app.modules.retrieval import retrieval_service as module
+
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {"_key": "rec1", "virtualRecordId": "vr1", "origin": "UPLOAD", "recordName": "doc.txt",
+             "mimeType": "text/plain"}
+        ]
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        retrieval_service.logger = logging.getLogger("tests.retrieval")
+        good = MagicMock(id="p-good", score=0.9, payload={
+            "page_content": "good", "metadata": {"virtualRecordId": "vr1", "orgId": "o1", "blockIndex": 0,
+                                                  "isBlockGroup": False}})
+        bad = MagicMock(id="p-bad", score=0.95, payload={
+            "page_content": "bad", "metadata": {
+                "virtualRecordId": "vr1", "orgId": "o1", "segmentVirtualRecordId": "vr1-part", "segmentIndex": 1,
+                "splitGen": "g", "blockIndex": 1 << 20, "isBlockGroup": False}})
+        mock_vector_db_service.query_nearest_points.return_value = [[bad, good]]
+        counted: list[float] = []
+        original = module.BAD_BLOCK_ADDRESS_POINTS
+        module.BAD_BLOCK_ADDRESS_POINTS = MagicMock(inc=lambda *a, value=1.0: counted.append(value))
+        try:
+            result = await retrieval_service.search_with_filters(queries=["q"], user_id="u1", org_id="o1")
+        finally:
+            module.BAD_BLOCK_ADDRESS_POINTS = original
+
+        assert result["status"] == "success"
+        assert [r["content"] for r in result["searchResults"]] == ["good"]
+        assert counted == [1.0]
+
+
+class TestStaleGenerations:
+    @pytest.mark.asyncio
+    async def test_search_with_filters_drops_a_hit_of_an_old_generation(
+        self, retrieval_service, mock_graph_provider,
+    ) -> None:
+        from tests.unit.modules.retrieval.split_fakes import (
+            FakeResolver,
+        )
+
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {"_key": "rec1", "virtualRecordId": "vr1", "origin": "UPLOAD", "recordName": "big.pdf",
+             "webUrl": "https://example.com/big.pdf", "mimeType": "application/pdf"},
+        ]
+
+        def hit(text: str, gen: str) -> dict:
+            return {"score": 0.9, "content": text, "citationType": "vectordb|document", "metadata": {
+                "virtualRecordId": "vr1", "orgId": "o1", "blockIndex": 0, "isBlockGroup": False,
+                "segmentVirtualRecordId": "vr1-part", "segmentIndex": 1, "splitGen": gen}}
+
+        retrieval_service._execute_parallel_searches = AsyncMock(
+            return_value=[hit("old", "gen-old"), hit("live", "gen-live")],
+        )
+        retrieval_service.split_resolver_factory = lambda: FakeResolver(live={"vr1": "gen-live"})
+
+        result = await retrieval_service.search_with_filters(queries=["q"], user_id="u1", org_id="o1")
+
+        assert [r["content"] for r in result["searchResults"]] == ["live"]

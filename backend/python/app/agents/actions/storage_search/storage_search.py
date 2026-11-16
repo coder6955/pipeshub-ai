@@ -45,6 +45,7 @@ from app.config.constants.service import config_node_constants
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
 from app.modules.agents.qna.chat_state import ChatState, remember_record_ids
+from app.modules.retrieval.split_content import default_resolver
 from app.utils.bounded_cache import SizeBoundedCache
 
 logger = logging.getLogger(__name__)
@@ -1624,6 +1625,9 @@ class StoragePatternMatch:
         # (the tool instance does not outlive it), so repeated commands and the
         # output filter do not ask again.
         self._access_by_vrid: dict[str, str | None] = {}
+        # stored-record id of a part -> its file's virtual record id; the stored file of a split file's
+        # part is named by the part's id, but access and answers are about the file.
+        self._file_of: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -1742,6 +1746,17 @@ class StoragePatternMatch:
             if (record_id := self._access_by_vrid[vrid]) is not None
         }
 
+    async def _roots_of(self, vrids: list[str], graph_provider: Any) -> dict[str, str]:  # noqa: ANN401
+        """The file of each stored part among *vrids*. When the split state cannot be read no stored record
+        is known to be a part: parts are then checked under their own ids, which no user holds, so only they
+        are denied and the rest of the files are still served."""
+        resolver = self.state.get("split_resolver") or default_resolver(graph_provider)
+        try:
+            return await resolver.roots_of(list(dict.fromkeys(vrids)))
+        except Exception:
+            logger.warning("[storage_pattern_match] split state unreadable; stored parts are denied", exc_info=True)
+            return {}
+
     async def _fetch_accessible_vrids(self, vrids: list[str]) -> dict[str, str] | None:
         user_id = self.state.get("user_id", "")
         org_id = self.state.get("org_id", "")
@@ -1758,12 +1773,17 @@ class StoragePatternMatch:
         )
         logger.debug("[_check_accessible_vrids] vrids=%s", vrids)
         try:
+            # A stored part is checked as the file it belongs to; one that cannot be resolved is checked
+            # (and so denied) under its own id, which no user holds.
+            roots = await self._roots_of(vrids, graph_provider)
+            self._file_of.update(roots)
             # The same adjudicator semantic search uses, with no container trusted
             # and the agent's knowledge scope bounding which record may be cited.
-            accessible = await graph_provider.filter_accessible_virtual_record_ids(
-                list(dict.fromkeys(vrids)), user_id, org_id,
+            checked = await graph_provider.filter_accessible_virtual_record_ids(
+                list(dict.fromkeys(roots.get(v, v) for v in vrids)), user_id, org_id,
                 scope_connector_ids=self._scope_connector_ids(),
             )
+            accessible = {v: checked[roots.get(v, v)] for v in vrids if checked and roots.get(v, v) in checked}
         except Exception as exc:
             logger.warning(
                 "[storage_pattern_match] permission check failed: %s", exc,
@@ -2261,8 +2281,10 @@ class StoragePatternMatch:
             candidates: list[tuple[str, str, int]] = []
             seen: set[str] = set()
             for path, vrid, match_count in line_vrids:
-                if vrid in accessible and vrid not in seen:
-                    seen.add(vrid)
+                # Parts of one file are one answer: the best-matching part stands for it.
+                file_vrid = self._file_of.get(vrid, vrid)
+                if vrid in accessible and file_vrid not in seen:
+                    seen.add(file_vrid)
                     candidates.append((path, vrid, match_count))
             paths_found = len(candidates)
             try:
@@ -2303,7 +2325,7 @@ class StoragePatternMatch:
                 meta: dict[str, str] = {
                     "record_id": record_id,
                     "record_name": graph_rec.get("recordName") or "",
-                    "virtual_record_id": vrid,
+                    "virtual_record_id": self._file_of.get(vrid, vrid),
                 }
                 if matched_terms:
                     meta["matched_terms"] = str(matched_terms)

@@ -28,6 +28,8 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app.modules.retrieval.hit_shape import content_vrid
+
 if TYPE_CHECKING:
     from app.utils.render_budget import RenderBudget
 
@@ -186,7 +188,9 @@ def _hits_from_search(
         if not isinstance(result, dict):
             continue
         metadata = result.get("metadata") or {}
-        if metadata.get("virtualRecordId") not in (None, virtual_record_id):
+        # The block index of a hit is local to the stored record that holds it, so only hits of this
+        # stored record (the part, for a split file) are read against ``blocks``.
+        if content_vrid(result) not in (None, virtual_record_id):
             continue
         index = metadata.get("blockIndex")
         if not isinstance(index, int):
@@ -245,7 +249,8 @@ async def select_relevant_blocks(
             user_id=user_id,
             org_id=org_id,
             limit=hit_limit,
-            virtual_record_ids_from_tool=[virtual_record_id],
+            # A part of a split file is searched through its file: the points carry the file's id.
+            virtual_record_ids_from_tool=[record.get("identity_vrid") or virtual_record_id],
         )
     except Exception:
         logger.warning(

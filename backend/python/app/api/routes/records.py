@@ -23,7 +23,9 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes
 from app.modules.demo_data.access import is_hidden_demo_record
 from app.modules.pipeline.parse_now import ParseNow, optional_redis
+from app.modules.retrieval.hit_shape import LOCAL_MASK
 from app.modules.retrieval.selection_scope import within_connection
+from app.modules.retrieval.split_content import default_resolver
 from app.services.model_identity.boundary import principal_from_request_user
 from app.services.model_identity.runtime import call_scope
 from app.services.model_identity.workload import Workload
@@ -45,7 +47,10 @@ from app.utils.record_reader import (
 )
 
 if TYPE_CHECKING:
+    import logging
+
     from app.containers.query import QueryAppContainer
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 router = APIRouter()
 
@@ -89,6 +94,26 @@ async def _check_access(request: Request, graph_provider: Any, record_id: str) -
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to check record access",
         ) from exc
+
+
+async def _refuse_block_address(graph_provider: IGraphDBProvider, record_id: str, logger: logging.Logger) -> None:
+    """A ``start_block`` this large is a block address only for a split file, whose own record holds none of
+    the part's blocks: reading it as a position would return the wrong passage. Any other record's position
+    is read as it always was, however large."""
+    try:
+        doc = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
+        vrid = (doc or {}).get("virtualRecordId")
+        split = bool(vrid) and bool(await default_resolver(graph_provider).live_generation([vrid]))
+    except Exception:
+        logger.error("Split state of %s unreadable; refusing a block address", record_id, exc_info=True)
+        raise HTTPException(
+            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail="Could not check this record. Try again shortly.",
+        ) from None
+    if split:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
+            detail="`start_block` is a position in the record, not a block address; use a `nextStartBlock`.",
+        )
 
 
 @router.get(
@@ -151,6 +176,8 @@ async def read_record_content(
         )
 
     accessible = await _check_access(request, graph_provider, record_id)
+    if start_block is not None and start_block > LOCAL_MASK:
+        await _refuse_block_address(graph_provider, record_id, logger)
     blob_store = await container.blob_store()
 
     if mode == "thread":

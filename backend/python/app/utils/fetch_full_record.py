@@ -513,8 +513,10 @@ class _RecordResolver:
         return "\n".join(record_metadata_lines({"_key": record_id, **graph_record}, self._frontend_url))
 
     def _from_map(self, record_id: str) -> dict[str, Any] | None:
+        """The shown record ``record_id``. A split file is held as several stored records (its own and one
+        per part read this turn); reading the file is reading its own, never a part."""
         for vrid, record in self._map.items():
-            if record is not None and record.get("id") == record_id:
+            if record is not None and record.get("id") == record_id and not record.get("segment_index"):
                 record["virtual_record_id"] = vrid
                 return record
         return None
