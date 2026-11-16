@@ -45,7 +45,7 @@ NODE_ONLY = ("/services/smtp", "/services/slackBot", "/services/auth/", "/servic
 _META = "re:^/services/connectors/[^/]+/metadataSchemas/"
 READS = {
     "kv": {
-        "/services/aiModels": ("app/embedding_main.py:1181", "AI_MODELS"),         # also utils/llm.py:267 (docling, parsing), extraction/client.py:153
+        "/services/aiModels": ("app/embedding_main.py:1269", "AI_MODELS"),         # also utils/llm.py:267 (docling, parsing), extraction/client.py:153
         "/services/secretKeys": ("app/api/middlewares/auth.py:206", "SECRET_KEYS"),  # parsing and extraction routes; policy_store.py:75 (pseudonyms)
         "/services/aiGateway/identityPolicy": ("app/services/model_identity/policy_store.py:64", "AI_GATEWAY_IDENTITY_POLICY"),  # parsing.py:276, extraction.py:116
         "/services/metricsCollection": ("app/telemetry/pusher.py:29", "/services/metricsCollection"),  # embedding, docling (pusher bound at start)
@@ -57,23 +57,23 @@ READS = {
         "/services/vectordb/*": ("app/services/vector_db/strategy_resolver.py:34", "/services/vectordb/"),
         "/services/platform/artifactRollout/membership/*": ("app/services/messaging/membership.py:35", "/services/platform/artifactRollout/membership/"),
         "/services/entityCleanup/*": ("app/connectors/services/entity_cleanup_intents.py:21", "/services/entityCleanup/"),  # entity_index_rebuild.py:40
-        "/migrations/class_units_backfill/*": ("app/modules/indexing/class_units_backfill.py:53", "/migrations/class_units_backfill/"),
-        "/services/secretKeys": ("app/core/envelope.py:330", "SECRET_KEYS"),
+        "/migrations/class_units_backfill/*": ("app/modules/indexing/class_units_backfill.py:54", "/migrations/class_units_backfill/"),
+        "/services/secretKeys": ("app/core/envelope.py:355", "SECRET_KEYS"),
         "/services/endpoints": ("app/modules/transformers/blob_storage.py:954", "ENDPOINTS"),
         "/services/storage": ("app/modules/transformers/blob_storage.py:963", "STORAGE"),
         "/services/arangodb": ("app/health/health.py:267", "ARANGODB"),
         "/services/kafka": ("app/services/messaging/utils.py:113", "KAFKA"),
         "/services/redis": ("app/config/configuration_service.py:577", "REDIS"),
         "/services/qdrant": ("app/services/vector_db/qdrant/qdrant.py:379", "QDRANT"),
-        "/services/pgvector": ("app/services/vector_db/pgvector/pgvector.py:160", "PGVECTOR"),
+        "/services/pgvector": ("app/services/vector_db/pgvector/pgvector.py:162", "PGVECTOR"),
         "/services/opensearch": ("app/services/vector_db/opensearch/opensearch.py:324", "OPENSEARCH"),
         "/services/redis-vector": ("app/services/vector_db/redis/redis_vector.py:303", "REDIS_VECTOR"),
-        "/services/aiModels": ("app/modules/transformers/entity_vectorstore.py:459", "AI_MODELS"),
+        "/services/aiModels": ("app/modules/transformers/entity_vectorstore.py:475", "AI_MODELS"),
         "/services/aiGateway/identityPolicy": ("app/services/model_identity/policy_store.py:64", "AI_GATEWAY_IDENTITY_POLICY"),
         "/services/namedEntities": ("app/modules/named_entities/domain/config.py:70", "NAMED_ENTITIES"),
         "/services/metricsCollection": ("app/telemetry/pusher.py:29", "/services/metricsCollection"),
         "/services/platform/settings": ("app/services/featureflag/platform_settings.py:21", "/services/platform/settings"),  # pipeline stages
-        "/services/file_types/config": ("app/services/messaging/kafka/handlers/record.py:260", "FILE_TYPES_CONFIG_KEY"),  # the record event handler
+        "/services/file_types/config": ("app/services/messaging/kafka/handlers/record.py:263", "FILE_TYPES_CONFIG_KEY"),  # the record event handler
         "/migrations/kh_listing_state_v1": ("app/services/graph_db/interface/graph_db_provider.py:46", "/migrations/kh_listing_state_v1"),
         "/migrations/etcd_to_redis": ("app/config/configuration_service.py:271", "/migrations/etcd_to_redis"),
         _META: ("app/modules/record_metadata/schemas.py:92", "metadataSchemas"),  # sink_orchestrator.py:38 (indexing)
