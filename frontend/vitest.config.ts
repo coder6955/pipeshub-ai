@@ -26,8 +26,9 @@ export default defineConfig({
     // Every unit test under app/ and lib/. A hand-kept list let new test
     // files sit unrun: three never ran, and one of them caught a real bug.
     // Playwright (tests/e2e) and Electron (electron/, run by
-    // test:electron) have their own runners.
-    include: ['app/**/*.test.{ts,tsx}', 'lib/**/*.test.{ts,tsx}'],
+    // test:electron) have their own runners; only the e2e helpers' own
+    // `*.unit.test.ts` (no stack needed) run here.
+    include: ['app/**/*.test.{ts,tsx}', 'lib/**/*.test.{ts,tsx}', 'tests/e2e/**/*.unit.test.ts'],
     passWithNoTests: false,
     // `include` lists every source file, loaded by a test or not, so the
     // percentage counts untested files instead of hiding them.

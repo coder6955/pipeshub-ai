@@ -59,6 +59,29 @@ Tests whose title ends in `@smoke` form a quick set covering the most important 
 
 A test should fail, not skip, when something it needs is missing from the page. Skip only for a genuine environment limit (for example, SMTP not configured, or an Enterprise-only feature), and give the reason.
 
+## Large PDF split journey (`@large-pdf`)
+
+`tests/e2e/knowledge-base/large-pdf-split/` proves that a PDF indexed in parts is seamless to users: one row and one record page under the original name, search hits and chat citations on the original pages, citations that open the original PDF at the cited page, and no part id anywhere in the DOM or in an API response (the response scanner, `leak-scanner.ts`, runs on every test through the `large-pdf.fixture.ts` fixture).
+
+It runs only when `E2E_LARGE_PDF=true`, in its own `large-pdf` project, and is ignored by every other project. It reads a prepared stack, so it is not part of CI: two collections hold the files it needs.
+
+| Variable | Meaning |
+|----------|---------|
+| `E2E_LARGE_PDF=true` | Enables the `large-pdf` project |
+| `E2E_SPLIT_KB_NAME` | Collection holding the large file that gets split (default `Large PDF split (verified)`) |
+| `E2E_UNSPLIT_KB_NAME` | Collection holding the short file that is not split (may be the same collection) |
+| `E2E_LARGE_FILE_NAME` / `E2E_LARGE_FILE_PAGES` | Name and page count of the large file in the stack (defaults `large-manual`, 1138) |
+| `E2E_SHORT_FILE_NAME` / `E2E_SHORT_FILE_PAGES` | Name and page count of the short file (defaults `short-report`, 12) |
+| `E2E_PAGE_ORACLE` | Path of the page-oracle JSON captured from an unsplit run of the large file: `{ "queries": { "<query>": [{ "page": n, "text": "<start of the passage>" }] }, "crossPart": [{ "question", "needs", "partsExpected": [part, ...] }] }`. It quotes the document under test, so it is not kept in the repository |
+| `E2E_PROGRESS_PDF` | For `06-progress-live.spec.ts` only: a 501-page cut made with `make-progress-pdf.py <large-file.pdf> 600 1100 <out.pdf>` |
+| `E2E_EVIDENCE_DIR` | Where step screenshots go (default `test-results/large-pdf-steps`) |
+
+```bash
+E2E_LARGE_PDF=true PLAYWRIGHT_NO_SERVER=1 npx playwright test --project=large-pdf
+```
+
+The specs run in file order on one worker: `01` list and record page, `02` search and duplicates, `03` chat citations and the viewer, `04` the unsplit file, `05` API sweep, `06` live progress while parts index (uploads and deletes its own file). The scanner's own controls run in the unit tier (`lib/__tests__` vitest), not here.
+
 ## Code Coverage
 
 Run `npm run test:e2e:coverage` to collect V8 code coverage during test execution. This uses [monocart-reporter](https://github.com/nicolo-ribaudo/monocart-reporter) to generate coverage reports.

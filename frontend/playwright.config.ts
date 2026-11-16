@@ -8,6 +8,11 @@ const COVERAGE_ENABLED = process.env.COVERAGE === 'true';
 // Tests that need a real AI model; they run in the `ai` project below.
 const AI_SPECS = [/chat\/chat-cited-answer\.spec\.ts/, /chat\/chat-link-labels\.spec\.ts/, /agents\/.*\.spec\.ts/];
 
+// The large-PDF split journey runs against a prepared stack (a split 1,138-page PDF and its
+// collections), so it stays out of every default project and runs only when asked for.
+const LARGE_PDF = process.env.E2E_LARGE_PDF === 'true';
+const LARGE_PDF_SPECS = /knowledge-base\/large-pdf-split\/.*\.spec\.ts/;
+
 // Sign-up and onboarding need a stack with no organization, so they run only
 // when asked for, before CI creates the org every other test signs in to.
 const FIRST_RUN = process.env.E2E_FIRST_RUN === 'true';
@@ -79,7 +84,7 @@ export default defineConfig({
     {
       name: 'authenticated',
       testMatch: /.*\.spec\.ts/,
-      testIgnore: [/auth\/login\.spec\.ts/, /setup\//, /seed\//, /first-run\//, /responsive\//, ...AI_SPECS],
+      testIgnore: [/auth\/login\.spec\.ts/, /setup\//, /seed\//, /first-run\//, /responsive\//, LARGE_PDF_SPECS, ...AI_SPECS],
       dependencies: ['setup', 'embedding-model'],
       use: {
         ...devices['Desktop Chrome'],
@@ -136,6 +141,30 @@ export default defineConfig({
         storageState: '.auth/user.json',
       },
     },
+
+    // The large-PDF split journey (E2E_LARGE_PDF=true). It uses the stack's own models and
+    // collections, so it depends on sign-in only; see tests/e2e/knowledge-base/large-pdf-split/.
+    ...(LARGE_PDF
+      ? [{
+          name: 'large-pdf',
+          testMatch: LARGE_PDF_SPECS,
+          dependencies: ['setup'],
+          // One retry only for a browser that the shared host's memory pressure killed ("Page crashed");
+          // the report shows every retried test, so a flaky product assertion is still visible.
+          retries: 1,
+          fullyParallel: false,
+          timeout: 600_000,
+          use: {
+            ...devices['Desktop Chrome'],
+            storageState: '.auth/user.json',
+            trace: 'on' as const,
+            screenshot: 'on' as const,
+            viewport: { width: 1440, height: 1000 },
+            // A 1,138-page viewer and a long stream in one container: keep Chromium off /dev/shm.
+            launchOptions: { args: ['--disable-dev-shm-usage', '--disable-gpu'] },
+          },
+        }]
+      : []),
 
     // A fresh install's first admin; see FIRST_RUN above.
     ...(FIRST_RUN
